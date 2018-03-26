@@ -101,9 +101,11 @@ client *createClient(int fd) {
     selectDb(c,0);
     uint64_t client_id;
     atomicGetIncr(server.next_client_id,client_id,1);
+	c->is_control = false;
+	c->enable_client = false;
     c->id = client_id;
     c->fd = fd;
-    c->name = NULL;
+	c->name = NULL;
     c->bufpos = 0;
     c->querybuf = sdsempty();
     c->pending_querybuf = sdsempty();
@@ -205,7 +207,7 @@ int prepareClientToWrite(client *c) {
          * a system call. We'll only really install the write handler if
          * we'll not be able to write the whole reply at once. */
         c->flags |= CLIENT_PENDING_WRITE;
-        listAddNodeHead(server.clients_pending_write,c);
+        listAddNodeHead(server.clients_pending_write, c);
     }
 
     /* Authorize the caller to queue in the output buffer of this client. */
@@ -228,8 +230,8 @@ int _addReplyToBuffer(client *c, const char *s, size_t len) {
     /* Check that the buffer has enough space available for this string. */
     if (len > available) return C_ERR;
 
-    memcpy(c->buf+c->bufpos,s,len);
-    c->bufpos+=len;
+    memcpy(c->buf + c->bufpos, s, len);
+    c->bufpos += len;
     return C_OK;
 }
 
@@ -238,7 +240,7 @@ void _addReplyObjectToList(client *c, robj *o) {
 
     if (listLength(c->reply) == 0) {
         sds s = sdsdup(o->ptr);
-        listAddNodeTail(c->reply,s);
+        listAddNodeTail(c->reply, s);
         c->reply_bytes += sdslen(s);
     } else {
         listNode *ln = listLast(c->reply);
@@ -246,13 +248,13 @@ void _addReplyObjectToList(client *c, robj *o) {
 
         /* Append to this object when possible. If tail == NULL it was
          * set via addDeferredMultiBulkLength(). */
-        if (tail && sdslen(tail)+sdslen(o->ptr) <= PROTO_REPLY_CHUNK_BYTES) {
-            tail = sdscatsds(tail,o->ptr);
+        if (tail && sdslen(tail) + sdslen(o->ptr) <= PROTO_REPLY_CHUNK_BYTES) {
+            tail = sdscatsds(tail, o->ptr);
             listNodeValue(ln) = tail;
             c->reply_bytes += sdslen(o->ptr);
         } else {
             sds s = sdsdup(o->ptr);
-            listAddNodeTail(c->reply,s);
+            listAddNodeTail(c->reply, s);
             c->reply_bytes += sdslen(s);
         }
     }
@@ -385,20 +387,20 @@ void addReplyString(client *c, const char *s, size_t len) {
 }
 
 void addReplyErrorLength(client *c, const char *s, size_t len) {
-    addReplyString(c,"-ERR ",5);
-    addReplyString(c,s,len);
-    addReplyString(c,"\r\n",2);
+    addReplyString(c, "-ERR ", 5);
+    addReplyString(c, s, len);
+    addReplyString(c, "\r\n", 2);
 }
 
 void addReplyError(client *c, const char *err) {
-    addReplyErrorLength(c,err,strlen(err));
+    addReplyErrorLength(c, err, strlen(err));
 }
 
 void addReplyErrorFormat(client *c, const char *fmt, ...) {
     size_t l, j;
     va_list ap;
     va_start(ap,fmt);
-    sds s = sdscatvprintf(sdsempty(),fmt,ap);
+    sds s = sdscatvprintf(sdsempty(), fmt, ap);
     va_end(ap);
     /* Make sure there are no newlines in the string, otherwise invalid protocol
      * is emitted. */
@@ -1031,7 +1033,7 @@ int handleClientsWithPendingWrites(void) {
         listDelNode(server.clients_pending_write,ln);
 
         /* Try to write buffers to the client socket. */
-        if (writeToClient(c->fd,c,0) == C_ERR) continue;
+        if (writeToClient(c->fd, c, 0) == C_ERR) continue;
 
         /* If there is nothing left, do nothing. Otherwise install
          * the write handler. */
@@ -1972,7 +1974,7 @@ void flushSlavesOutputBuffers(void) {
     listIter li;
     listNode *ln;
 
-    listRewind(server.slaves,&li);
+    listRewind(server.slaves, &li);
     while((ln = listNext(&li))) {
         client *slave = listNodeValue(ln);
         int events;
@@ -1983,7 +1985,7 @@ void flushSlavesOutputBuffers(void) {
          * of put_online_on_ack is to postpone the moment it is installed.
          * This is what we want since slaves in this state should not receive
          * writes before the first ACK. */
-        events = aeGetFileEvents(server.el,slave->fd);
+        events = aeGetFileEvents(server.el, slave->fd);
         if (events & AE_WRITABLE &&
             slave->replstate == SLAVE_STATE_ONLINE &&
             clientHasPendingReplies(slave))

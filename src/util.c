@@ -646,7 +646,7 @@ sds getAbsolutePath(char *filename) {
     while (sdslen(relpath) >= 3 &&
            relpath[0] == '.' && relpath[1] == '.' && relpath[2] == '/')
     {
-        sdsrange(relpath,3,-1);
+        sdsrange(relpath, 3, -1);
         if (sdslen(abspath) > 1) {
             char *p = abspath + sdslen(abspath)-2;
             int trimlen = 1;
@@ -655,12 +655,12 @@ sds getAbsolutePath(char *filename) {
                 p--;
                 trimlen++;
             }
-            sdsrange(abspath,0,-(trimlen+1));
+            sdsrange(abspath, 0, -(trimlen+1));
         }
     }
 
     /* Finally glue the two parts together. */
-    abspath = sdscatsds(abspath,relpath);
+    abspath = sdscatsds(abspath, relpath);
     sdsfree(relpath);
     return abspath;
 }

@@ -684,6 +684,9 @@ typedef struct readyList {
 /* With multiplexing we need to take per-client state.
  * Clients are taken in a linked list. */
 typedef struct client {
+	sds hashid;
+	short is_control;			/* nonzero if control client */
+	short enable_client;
     uint64_t id;            /* Client incremental unique ID. */
     int fd;                 /* Client socket. */
     redisDb *db;            /* Pointer to currently SELECTed DB. */
@@ -864,7 +867,7 @@ typedef struct rdbSaveInfo {
     long long repl_offset;                  /* Replication offset. */
 } rdbSaveInfo;
 
-#define RDB_SAVE_INFO_INIT {-1,0,"000000000000000000000000000000",-1}
+#define RDB_SAVE_INFO_INIT {-1, 0, "000000000000000000000000000000", -1}
 
 /*-----------------------------------------------------------------------------
  * Global server state
@@ -912,6 +915,10 @@ struct redisServer {
                                    client blocked on a module command needs
                                    to be processed. */
     /* Networking */
+	sds secretphrase;
+	int control_port;
+	char* control_bindaddr;
+	int control_ipfd;
     int port;                   /* TCP listening port */
     int tcp_backlog;            /* TCP listen() backlog */
     char *bindaddr[CONFIG_BINDADDR_MAX]; /* Addresses we should bind to */
@@ -1835,6 +1842,11 @@ char *redisGitDirty(void);
 uint64_t redisBuildId(void);
 
 /* Commands prototypes */
+void lockFileCommand(client *c);
+void delFileCommand(client *c);
+void sendCmdCommand(client *c);
+void enableCommand(client *c);
+void getClientsCommand(client *c);
 void authCommand(client *c);
 void pingCommand(client *c);
 void echoCommand(client *c);

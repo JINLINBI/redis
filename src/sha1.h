@@ -6,6 +6,7 @@ SHA-1 in C
 By Steve Reid <steve@edmweb.com>
 100% Public Domain
 */
+#include <stdint.h>
 
 typedef struct {
     uint32_t state[5];

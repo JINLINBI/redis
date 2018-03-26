@@ -202,7 +202,12 @@ void loadServerConfigFromString(char *config) {
         sdstolower(argv[0]);
 
         /* Execute config directives */
-        if (!strcasecmp(argv[0],"timeout") && argc == 2) {
+		if(!strcasecmp(argv[0], "secretphrase") && argc == 2){
+			if(strlen(argv[1]) > 20) goto loaderr;
+			server.secretphrase = sdsnew(argv[1]);
+			serverLog(LL_WARNING, "load secretphrase config faild");
+		}
+        else if (!strcasecmp(argv[0],"timeout") && argc == 2) {
             server.maxidletime = atoi(argv[1]);
             if (server.maxidletime < 0) {
                 err = "Invalid timeout value"; goto loaderr;
