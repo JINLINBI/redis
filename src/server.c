@@ -55,6 +55,9 @@
 #include <sys/utsname.h>
 #include <locale.h>
 #include <sys/socket.h>
+#include <setjmp.h>
+
+jmp_buf jmp_env;
 
 /* Our shared "common" objects */
 
@@ -129,8 +132,19 @@ struct redisCommand redisCommandTable[] = {
     {"enable",enableCommand,-2,"wm",0,NULL,1,1,1,0,0},
     {"getClients",getClientsCommand,1,"rF",0,NULL,1,1,1,0,0},
     {"sendCmd",sendCmdCommand,-2,"F",0,NULL,1,1,1,0,0},
-    {"del",delFileCommand,3,"F",0,NULL,1,1,1,0,0},
-    {"lock",lockFileCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"lock",lockCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"unlock",lockCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"upload", uploadCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"download", downloadCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"del",deleteCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"cut", cutCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"copy", copyCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"paste", pasteCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"delDir", delDirCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"moveDir", moveDirCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"enterDir", enterDirCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"upDir", upDirCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"backDir", backDirCommand,3,"F",0,NULL,1,1,1,0,0},
 };
 
 /*============================ Utility functions ============================ */
@@ -3326,6 +3340,10 @@ void redisAsciiArt(void) {
     zfree(buf);
 }
 
+static void sigAlarmHandler(int sig){
+	longjmp(jmp_env, 1);
+}
+
 static void sigShutdownHandler(int sig) {
     char *msg;
 
@@ -3366,6 +3384,11 @@ void setupSignalHandlers(void) {
     act.sa_handler = sigShutdownHandler;
     sigaction(SIGTERM, &act, NULL);
     sigaction(SIGINT, &act, NULL);
+
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = 0;
+    act.sa_handler = sigAlarmHandler;
+    sigaction(SIGALRM, &act, NULL);
 
 #ifdef HAVE_BACKTRACE
     sigemptyset(&act.sa_mask);

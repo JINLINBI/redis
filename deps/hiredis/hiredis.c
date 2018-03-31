@@ -791,6 +791,13 @@ int redisEnableKeepAlive(redisContext *c) {
  *
  * After this function is called, you may use redisContextReadReply to
  * see if there is a reply available. */
+void printBuffer(char* buf, int size){
+	for(int i = 0; i < size; i++)
+		printf("%c", buf[i]);
+	printf("\n");
+}
+
+
 int redisBufferRead(redisContext *c) {
     char buf[1024*16];
     int nread;
@@ -800,6 +807,8 @@ int redisBufferRead(redisContext *c) {
         return REDIS_ERR;
 
     nread = read(c->fd,buf,sizeof(buf));
+	printBuffer(buf, 1024 * 16);
+
     if (nread == -1) {
         if ((errno == EAGAIN && !(c->flags & REDIS_BLOCK)) || (errno == EINTR)) {
             /* Try again later */

