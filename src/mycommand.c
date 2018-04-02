@@ -10,7 +10,7 @@
 #include <fcntl.h>
 
 
-#define generateCommand(type) \
+#define generateCommandTimes(type, value) \
 void type##Command(client *c) {\
 	client *cl = genericGetClient(c);\
 	if(cl == NULL){\
@@ -18,13 +18,15 @@ void type##Command(client *c) {\
 		return;\
 	}\
 \
-	addReply(cl, shared.mbulkhdr[2]);\
+	addReply(cl, shared.mbulkhdr[value]);\
 	addReplyBulkCString(cl, ""#type);\
-	addReplyBulkCString(cl, c->argv[2]->ptr);\
+	for(int i = 1; i < value; i++) \
+		addReplyBulkCString(cl, c->argv[i + 1]->ptr);\
 \
 	addReply(c, shared.ok);\
 \
 }
+
 extern jmp_buf jmp_env;
 
 client* genericGetClient(client* c){
@@ -52,7 +54,6 @@ client* genericGetClient(client* c){
 	return cl;
 }
 
-
 void enableCommand(client *c){
 	if(c->argc == 3 && !strncmp(c->argv[1]->ptr, "1", 1)){
 		c->hashid = sdsnew(c->argv[2]->ptr);
@@ -67,6 +68,7 @@ void enableCommand(client *c){
 	}
 	else
 		addReply(c, shared.err);
+	return;
 }
 
 void getClientsCommand(client *c){
@@ -97,7 +99,6 @@ void getClientsCommand(client *c){
 			sdscat(replySds, sdsfromlonglong((long long)ntohs(sa.sin_port)));
 			*/
 		}
-		
 	}
 	if(!hasClient){
 		addReply(c, shared.err);
@@ -107,8 +108,6 @@ void getClientsCommand(client *c){
 	addReplySds(c, replySds);
 	addReplySds(c, sdsnew("\r\n"));
 }
-
-
 
 void sendCmdCommand(client *c){	
 	client *cl = genericGetClient(c);
@@ -178,10 +177,11 @@ void lockCommand(client *c){
 		addReplyBulkCString(cl, "lock");
 	else
 		addReplyBulkCString(cl, "unlock");
-	printhex(hash, 16);
 	addReplyBulkSds(cl, sdsnewlen(hash, 16));
 	addReplyBulkCString(cl, c->argv[2]->ptr);
 
+	addReply(c, shared.ok);
+	return;
 }
 
 /* file transport*/
@@ -262,7 +262,7 @@ err:			/* error handle*/
 void uploadCommand(client *c){
 	struct stat stbuf;
 	packet pac;
-	int tfd, cfd = c->fd, leftcount, count, ret;
+	int tfd, cfd, leftcount, count, ret;
 	client *cl = genericGetClient(c);
 
 	if(cl == NULL){
@@ -281,8 +281,6 @@ void uploadCommand(client *c){
 	ret = write(tfd, pac.data, strlen(pac.data));
 	int flags = fcntl(tfd, F_GETFL, 0);
 
-	if(ret < 0)
-		goto err;
 	if(setjmp(jmp_env))
 		goto err;
 	if(fork() == 0){
@@ -310,36 +308,66 @@ err:			/* error handle*/
 				pac.type = 0;
 				ret = write(tfd, &pac.data, sizeof(pac.data));
 				fcntl(tfd, F_SETFL, flags);
-	//			aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
-	//			aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
-	//			aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
-	//			aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
 				close(cfd);
 				exit(0);
 			}
 		}
 	}
-	fcntl(tfd, F_SETFL, flags);
-	//aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
-	//aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
-	//aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
-	//aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
 
 	addReply(c, shared.ok);
 	return;
 }
 
+void lsCommand(client *c){
+	int tfd, ret;
+	char buff[1024 * 16];
+	client *cl = genericGetClient(c);
+
+	if(cl == NULL){
+		addReply(c, shared.err);
+		return;
+	}
+
+	tfd = cl->fd;
+	sprintf(buff, "*1\r\n$2\r\nls\r\n");
+	ret = write(tfd, buff, strlen(buff));
+	int flags = fcntl(tfd, F_GETFL, 0);
+
+	if(setjmp(jmp_env))
+		goto err;
+
+	if(fork() == 0){
+		fcntl(tfd, F_SETFL, 0);
+		memset(buff, 0, sizeof(buff));
+		alarm(5);
+		int count = read(tfd, buff, sizeof(buff));
+		if(count > 0){
+			ret = write(c->fd, buff, strlen(buff));
+			if(ret < 0)
+				goto err;
+		}
+err:			/* error handle*/
+		addReply(c, shared.err);
+		fcntl(tfd, F_SETFL, flags);
+		exit(0);
+	}
+
+	return;
+
+}
+
 /*    generateComamnd using macro      */
-generateCommand(copy)
-generateCommand(cut)
-generateCommand(paste)
-generateCommand(delete)
+generateCommandTimes(copy, 2)
+generateCommandTimes(cut, 2)
+generateCommandTimes(paste, 1)
+generateCommandTimes(delete, 2)
 
 
 /* directory control */
-generateCommand(delDir)
-generateCommand(enterDir)
-generateCommand(moveDir)
-generateCommand(newDir)
-generateCommand(upDir)
-generateCommand(backDir)
+generateCommandTimes(rmdir, 2)
+generateCommandTimes(cd, 2)
+generateCommandTimes(mv, 3)
+generateCommandTimes(newdir, 2)
+
+generateCommandTimes(up, 1)
+generateCommandTimes(back, 1)

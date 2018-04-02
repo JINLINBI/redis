@@ -140,11 +140,13 @@ struct redisCommand redisCommandTable[] = {
     {"cut", cutCommand,3,"F",0,NULL,1,1,1,0,0},
     {"copy", copyCommand,3,"F",0,NULL,1,1,1,0,0},
     {"paste", pasteCommand,3,"F",0,NULL,1,1,1,0,0},
-    {"delDir", delDirCommand,3,"F",0,NULL,1,1,1,0,0},
-    {"moveDir", moveDirCommand,3,"F",0,NULL,1,1,1,0,0},
-    {"enterDir", enterDirCommand,3,"F",0,NULL,1,1,1,0,0},
-    {"upDir", upDirCommand,3,"F",0,NULL,1,1,1,0,0},
-    {"backDir", backDirCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"rmdir", rmdirCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"newdir", newdirCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"mv", mvCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"cd", cdCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"up", upCommand,2,"F",0,NULL,1,1,1,0,0},
+    {"back", backCommand,2,"F",0,NULL,1,1,1,0,0},
+    {"ls", lsCommand,2,"F",0,NULL,1,1,1,0,0},
 };
 
 /*============================ Utility functions ============================ */

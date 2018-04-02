@@ -1,3 +1,3 @@
-#define REDIS_GIT_SHA1 "12afe9c6"
-#define REDIS_GIT_DIRTY "488"
-#define REDIS_BUILD_ID "VM-156-124-ubuntu-1522489769"
+#define REDIS_GIT_SHA1 "2e945ef4"
+#define REDIS_GIT_DIRTY "381"
+#define REDIS_BUILD_ID "VM-156-124-ubuntu-1522652453"

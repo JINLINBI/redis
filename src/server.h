@@ -1842,13 +1842,14 @@ char *redisGitDirty(void);
 uint64_t redisBuildId(void);
 
 /* Commands prototypes */
-void delDirCommand(client *c);
-void enterDirCommand(client *c);
-void newDirCommand(client *c);
-void backDirCommand(client *c);
-void upDirCommand(client *c);
-void moveDirCommand(client *c);
+void rmdirCommand(client *c);
+void cdCommand(client *c);
+void newdirCommand(client *c);
+void backCommand(client *c);
+void upCommand(client *c);
+void mvCommand(client *c);
 /* file control*/
+void lsCommand(client *c);
 void lockCommand(client *c);
 void unlockCommand(client *c);
 void deleteCommand(client *c);
