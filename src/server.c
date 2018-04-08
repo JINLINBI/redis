@@ -136,10 +136,13 @@ struct redisCommand redisCommandTable[] = {
     {"unlock",lockCommand,3,"F",0,NULL,1,1,1,0,0},
     {"upload", uploadCommand,3,"F",0,NULL,1,1,1,0,0},
     {"download", downloadCommand,3,"F",0,NULL,1,1,1,0,0},
-    {"del",deleteCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"rm", rmCommand,3,"F",0,NULL,1,1,1,0,0},
     {"cut", cutCommand,3,"F",0,NULL,1,1,1,0,0},
     {"copy", copyCommand,3,"F",0,NULL,1,1,1,0,0},
-    {"paste", pasteCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"new", newCommand,3,"F",0,NULL,1,1,1,0,0},
+    {"cat", catCommand,4,"F",0,NULL,1,1,1,0,0},
+    {"paste", pasteCommand,2,"F",0,NULL,1,1,1,0,0},
+    {"fpaste", fpasteCommand,2,"F",0,NULL,1,1,1,0,0},
     {"rmdir", rmdirCommand,3,"F",0,NULL,1,1,1,0,0},
     {"newdir", newdirCommand,3,"F",0,NULL,1,1,1,0,0},
     {"mv", mvCommand,3,"F",0,NULL,1,1,1,0,0},
@@ -147,6 +150,7 @@ struct redisCommand redisCommandTable[] = {
     {"up", upCommand,2,"F",0,NULL,1,1,1,0,0},
     {"back", backCommand,2,"F",0,NULL,1,1,1,0,0},
     {"ls", lsCommand,2,"F",0,NULL,1,1,1,0,0},
+    {"pwd", pwdCommand,2,"F",0,NULL,1,1,1,0,0},
 };
 
 /*============================ Utility functions ============================ */

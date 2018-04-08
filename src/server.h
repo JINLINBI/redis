@@ -1849,13 +1849,17 @@ void backCommand(client *c);
 void upCommand(client *c);
 void mvCommand(client *c);
 /* file control*/
+void newCommand(client *c);
+void catCommand(client *c);
 void lsCommand(client *c);
+void pwdCommand(client *c);
 void lockCommand(client *c);
 void unlockCommand(client *c);
-void deleteCommand(client *c);
+void rmCommand(client *c);
 void copyCommand(client *c);
 void cutCommand(client *c);
 void pasteCommand(client *c);
+void fpasteCommand(client *c);
 void downloadCommand(client *c);
 void uploadCommand(client *c);
 
