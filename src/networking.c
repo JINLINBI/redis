@@ -101,6 +101,7 @@ client *createClient(int fd) {
     selectDb(c,0);
     uint64_t client_id;
     atomicGetIncr(server.next_client_id,client_id,1);
+	c->cur_trojan = NULL;
 	c->is_control = false;
 	c->enable_client = false;
     c->id = client_id;
@@ -834,6 +835,7 @@ void freeClient(client *c) {
     }
 
     /* Free the query buffer */
+	sdsfree(c->hashid);
     sdsfree(c->querybuf);
     sdsfree(c->pending_querybuf);
     c->querybuf = NULL;
