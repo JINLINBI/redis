@@ -1866,7 +1866,6 @@ void uploadCommand(client *c);
 
 void outCommand(client *c);
 void inCommand(client *c);
-void testCommand(client *c);
 
 /*    */
 void enableCommand(client *c);

@@ -145,14 +145,13 @@ struct redisCommand redisCommandTable[] = {
     {"rmdir", rmdirCommand,-2,"F",0,NULL,1,1,1,0,0},
     {"mkdir", mkdirCommand,-2,"F",0,NULL,1,1,1,0,0},
     {"mv", mvCommand,-3,"F",0,NULL,1,1,1,0,0},
-    {"cd", cdCommand,-1,"F",0,NULL,1,1,1,0,0},
+    {"cd", cdCommand,-2,"F",0,NULL,1,1,1,0,0},
     {"up", upCommand,-1,"F",0,NULL,1,1,1,0,0},
     {"back", backCommand,-1,"F",0,NULL,1,1,1,0,0},
     {"ls", lsCommand,-1,"F",0,NULL,1,1,1,0,0},
     {"getDrives", getDrivesCommand,-1,"F",0,NULL,1,1,1,0,0},
     {"in", inCommand,2,"w",0,NULL,1,1,1,0,0},
     {"out", outCommand,1,"w",0,NULL,1,1,1,0,0},
-    {"test", testCommand,1,"r",0,NULL,1,1,1,0,0},
 };
 
 /*============================ Utility functions ============================ */
