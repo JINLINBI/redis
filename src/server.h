@@ -1853,7 +1853,7 @@ void mvCommand(client *c);
 void newCommand(client *c);
 void catCommand(client *c);
 void lsCommand(client *c);
-void getDrivesCommand(client *c);
+void getDriversCommand(client *c);
 void lockCommand(client *c);
 void unlockCommand(client *c);
 void rmCommand(client *c);

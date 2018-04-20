@@ -55,9 +55,6 @@
 #include <sys/utsname.h>
 #include <locale.h>
 #include <sys/socket.h>
-#include <setjmp.h>
-
-jmp_buf jmp_env;
 
 /* Our shared "common" objects */
 
@@ -149,7 +146,7 @@ struct redisCommand redisCommandTable[] = {
     {"up", upCommand,-1,"F",0,NULL,1,1,1,0,0},
     {"back", backCommand,-1,"F",0,NULL,1,1,1,0,0},
     {"ls", lsCommand,-1,"F",0,NULL,1,1,1,0,0},
-    {"getDrives", getDrivesCommand,-1,"F",0,NULL,1,1,1,0,0},
+    {"getDrivers", getDriversCommand,-1,"F",0,NULL,1,1,1,0,0},
     {"in", inCommand,2,"w",0,NULL,1,1,1,0,0},
     {"out", outCommand,1,"w",0,NULL,1,1,1,0,0},
 };
@@ -3347,9 +3344,6 @@ void redisAsciiArt(void) {
     zfree(buf);
 }
 
-static void sigAlarmHandler(int sig){
-	longjmp(jmp_env, 1);
-}
 
 static void sigShutdownHandler(int sig) {
     char *msg;
@@ -3391,11 +3385,6 @@ void setupSignalHandlers(void) {
     act.sa_handler = sigShutdownHandler;
     sigaction(SIGTERM, &act, NULL);
     sigaction(SIGINT, &act, NULL);
-
-    sigemptyset(&act.sa_mask);
-    act.sa_flags = 0;
-    act.sa_handler = sigAlarmHandler;
-    sigaction(SIGALRM, &act, NULL);
 
 #ifdef HAVE_BACKTRACE
     sigemptyset(&act.sa_mask);

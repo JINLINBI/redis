@@ -127,7 +127,9 @@ mycommand.o: mycommand.c server.h fmacros.h config.h solarisfixes.h rio.h \
  sds.h ../deps/lua/src/lua.h ../deps/lua/src/luaconf.h ae.h dict.h \
  adlist.h zmalloc.h ../deps/jemalloc/include/jemalloc/jemalloc.h anet.h \
  ziplist.h intset.h stream.h rax.h listpack.h version.h util.h latency.h \
- sparkline.h quicklist.h zipmap.h sha1.h endianconv.h crc64.h rdb.h
+ sparkline.h quicklist.h zipmap.h sha1.h endianconv.h crc64.h rdb.h \
+ mycommand.h myutils.h
+myutils.o: myutils.c myutils.h sha1.h sds.h
 networking.o: networking.c server.h fmacros.h config.h solarisfixes.h \
  rio.h sds.h ../deps/lua/src/lua.h ../deps/lua/src/luaconf.h ae.h dict.h \
  adlist.h zmalloc.h ../deps/jemalloc/include/jemalloc/jemalloc.h anet.h \

