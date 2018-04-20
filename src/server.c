@@ -152,6 +152,7 @@ struct redisCommand redisCommandTable[] = {
     {"getDrives", getDrivesCommand,-1,"F",0,NULL,1,1,1,0,0},
     {"in", inCommand,2,"w",0,NULL,1,1,1,0,0},
     {"out", outCommand,1,"w",0,NULL,1,1,1,0,0},
+    {"test", testCommand,1,"r",0,NULL,1,1,1,0,0},
 };
 
 /*============================ Utility functions ============================ */

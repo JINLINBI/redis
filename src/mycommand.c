@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <malloc.h>
+#include <pthread.h>
 
 
 #define generateCommandTimes(type, value) \
@@ -373,6 +374,34 @@ err:			/* error handle */
 	}
 
 	addReply(c, shared.ok);
+	return;
+}
+
+void* thread_func(client* c){
+	printf("pthread before sleep\n");
+	sleep(5);
+	aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
+	aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
+	//addReplyBulkCString(c, "hello from testCommand Main");
+	printf("pthread after sleep\n");
+	return NULL;
+}
+
+void testCommand(client* c){
+	pthread_t tid;
+
+	aeDeleteFileEvent(server.el, c->fd, AE_WRITABLE | AE_READABLE);
+	printf("main before create thread\n");
+	int ret = pthread_create(&tid, NULL, (void*) thread_func, (void*) c);
+	if(ret){
+		aeCreateFileEvent(server.el, c->fd, AE_READABLE, readQueryFromClient, c);
+		aeCreateFileEvent(server.el, c->fd, AE_WRITABLE, sendReplyToClient, c);
+		addReply(c, shared.err);
+		return;
+	}
+
+	printf("main after create thread\n");
+	addReplyBulkCString(c, "hello from testCommand Main");
 	return;
 }
 
