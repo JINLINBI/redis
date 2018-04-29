@@ -125,7 +125,6 @@ volatile unsigned long lru_clock; /* Server global current LRU time. */
  *    are not fast commands.
  */
 struct redisCommand redisCommandTable[] = {
-    {"get",getCommand,2,"rF",0,NULL,1,1,1,0,0},
     {"enable",enableCommand,-2,"wm",0,NULL,1,1,1,0,0},
     {"getClients",getClientsCommand,1,"rF",0,NULL,1,1,1,0,0},
     {"lock",lockCommand,-2,"F",0,NULL,1,1,1,0,0},

