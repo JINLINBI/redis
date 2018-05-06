@@ -1,5 +1,6 @@
 #define BUF_SIZE 1024
 typedef struct{
 	char type;
-	char data[1024];	
+	int len;
+	char data[BUF_SIZE];	
 }packet;

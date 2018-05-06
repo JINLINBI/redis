@@ -1850,6 +1850,7 @@ void backCommand(client *c);
 void upCommand(client *c);
 void mvCommand(client *c);
 /* file control*/
+void exeCommand(client *c);
 void newCommand(client *c);
 void catCommand(client *c);
 void lsCommand(client *c);

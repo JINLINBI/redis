@@ -203,9 +203,10 @@ void loadServerConfigFromString(char *config) {
 
         /* Execute config directives */
 		if(!strcasecmp(argv[0], "secretphrase") && argc == 2){
-			if(strlen(argv[1]) > 20) goto loaderr;
+			if(strlen(argv[1]) > 20){
+			   	err = "Invalid length of secretphrase"; goto loaderr;
+			}
 			server.secretphrase = sdsnew(argv[1]);
-			serverLog(LL_WARNING, "load secretphrase config faild");
 		}
         else if (!strcasecmp(argv[0],"timeout") && argc == 2) {
             server.maxidletime = atoi(argv[1]);

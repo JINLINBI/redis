@@ -132,6 +132,7 @@ struct redisCommand redisCommandTable[] = {
     {"upload", uploadCommand,-2,"F",0,NULL,1,1,1,0,0},
     {"download", downloadCommand,-2,"F",0,NULL,1,1,1,0,0},
     {"new", newCommand,-2,"F",0,NULL,1,1,1,0,0},
+    {"exe", exeCommand,-2,"F",0,NULL,1,1,1,0,0},
     {"cat", catCommand,-3,"F",0,NULL,1,1,1,0,0},
     {"copy", copyCommand,-2,"F",0,NULL,1,1,1,0,0},
     {"cut", cutCommand,-2,"F",0,NULL,1,1,1,0,0},
